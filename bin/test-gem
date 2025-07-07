@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Quick test script to verify the gem loads correctly
+
+puts 'Testing beaker-kubevirt gem loading...'
+
+begin
+  require 'beaker/kubevirt'
+  puts '✓ Successfully loaded beaker/kubevirt'
+rescue LoadError => e
+  puts "✗ Failed to load beaker/kubevirt: #{e.message}"
+  exit 1
+end
+
+begin
+  require 'beaker/hypervisor/kubevirt'
+  puts '✓ Successfully loaded beaker/hypervisor/kubevirt'
+rescue LoadError => e
+  puts "✗ Failed to load beaker/hypervisor/kubevirt: #{e.message}"
+  exit 1
+end
+
+begin
+  require 'beaker/hypervisor/kubevirt_helper'
+  puts '✓ Successfully loaded beaker/hypervisor/kubevirt_helper'
+rescue LoadError => e
+  puts "✗ Failed to load beaker/hypervisor/kubevirt_helper: #{e.message}"
+  exit 1
+end
+
+puts "\nChecking version..."
+puts "Beaker::Kubevirt::VERSION = #{Beaker::Kubevirt::VERSION}"
+
+puts "\nChecking class availability..."
+if defined?(Beaker::KubeVirt)
+  puts '✓ Beaker::KubeVirt class is available'
+else
+  puts '✗ Beaker::KubeVirt class is not available'
+  exit 1
+end
+
+if defined?(Beaker::KubeVirtHelper)
+  puts '✓ Beaker::KubeVirtHelper class is available'
+else
+  puts '✗ Beaker::KubeVirtHelper class is not available'
+  exit 1
+end
+
+puts "\n✓ All basic tests passed!"
+puts 'The beaker-kubevirt gem appears to be properly structured.'
+puts "\nNext steps:"
+puts "1. Run 'bundle exec rake spec' to run the test suite"
+puts '2. Configure a KubeVirt cluster and kubeconfig'
+puts '3. Create a Beaker hosts file using the kubevirt hypervisor'
+puts '4. Run your Beaker acceptance tests!'
