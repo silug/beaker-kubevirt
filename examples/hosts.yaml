@@ -1,0 +1,66 @@
+---
+HOSTS:
+  centos-8-kubevirt:
+    platform: el-8-x86_64
+    hypervisor: kubevirt
+    # KubeVirt-specific configuration
+    kubeconfig: ~/.kube/config
+    kubecontext: my-cluster  # optional
+    namespace: beaker-tests
+    vm_image: quay.io/kubevirt/centos-stream8-container-disk-demo
+    network_mode: port-forward
+    ssh_key: ~/.ssh/id_rsa.pub
+    cpu: 2
+    memory: 4Gi
+    # Beaker-specific configuration
+    user: centos
+    ssh:
+      auth_methods:
+        - publickey
+
+  ubuntu-20-kubevirt:
+    platform: ubuntu-20.04-x86_64
+    hypervisor: kubevirt
+    # Use a PVC as the VM image
+    kubeconfig: ~/.kube/config
+    namespace: beaker-tests
+    vm_image: pvc:ubuntu-20-04-cloud-image
+    network_mode: nodeport
+    ssh_key: ~/.ssh/id_rsa.pub
+    cpu: 1
+    memory: 2Gi
+    user: ubuntu
+    ssh:
+      auth_methods:
+        - publickey
+
+  fedora-35-kubevirt:
+    platform: fedora-35-x86_64
+    hypervisor: kubevirt
+    # Use Multus external networking
+    kubeconfig: ~/.kube/config
+    namespace: beaker-tests
+    vm_image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+    network_mode: multus
+    ssh_key: ~/.ssh/id_rsa.pub
+    cpu: 2
+    memory: 2Gi
+    user: fedora
+    ssh:
+      auth_methods:
+        - publickey
+
+CONFIG:
+  # Global SSH configuration
+  ssh:
+    password: beaker
+    auth_methods:
+      - publickey
+      - password
+  
+  # Global timeout settings
+  timeout: 300
+  
+  # Test configuration
+  log_level: verbose
+  color: true
