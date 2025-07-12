@@ -24,7 +24,9 @@ module Beaker
     # Create a virtual machine
     # @param [Hash] vm_spec The VM specification
     def create_vm(vm_spec)
-      @kubevirt_client.create_virtual_machine(vm_spec)
+      # Convert all keys to symbols recursively
+      vm_spec_sym = symbolize_keys(vm_spec)
+      @kubevirt_client.create_virtual_machine(vm_spec_sym)
     end
 
     ##
@@ -118,7 +120,8 @@ module Beaker
         },
       }
 
-      @k8s_client.create_service(service_spec)
+      service_spec_sym = symbolize_keys(vm_spec)
+      @k8s_client.create_service(service_spec_sym)
     end
 
     ##
@@ -157,40 +160,26 @@ module Beaker
     ##
     # Setup Kubernetes API client
     def setup_kubernetes_client
-      config = load_kubeconfig
-      context_config = get_context_config(config)
-
-      api_endpoint = context_config.dig('cluster', 'server')
-      api_version = 'v1'
-
-      ssl_options = setup_ssl_options(context_config)
-      auth_options = setup_auth_options(context_config)
-
+      config = Kubeclient::Config.read(@kubeconfig_path)
+      context_config = config.context(@kubecontext)
       @k8s_client = Kubeclient::Client.new(
-        api_endpoint,
-        api_version,
-        ssl_options: ssl_options,
-        auth_options: auth_options,
+        context_config.api_endpoint,
+        'v1',
+        ssl_options: context_config.ssl_options,
+        auth_options: context_config.auth_options,
       )
     end
 
     ##
     # Setup KubeVirt API client
     def setup_kubevirt_client
-      config = load_kubeconfig
-      context_config = get_context_config(config)
-
-      api_endpoint = context_config.dig('cluster', 'server')
-      api_version = 'kubevirt.io/v1'
-
-      ssl_options = setup_ssl_options(context_config)
-      auth_options = setup_auth_options(context_config)
-
+      config = Kubeclient::Config.read(@kubeconfig_path)
+      context_config = config.context(@kubecontext)
       @kubevirt_client = Kubeclient::Client.new(
-        api_endpoint,
-        api_version,
-        ssl_options: ssl_options,
-        auth_options: auth_options,
+        context_config.api_endpoint + '/apis/kubevirt.io',
+        'v1',
+        ssl_options: context_config.ssl_options,
+        auth_options: context_config.auth_options,
       )
     end
 
@@ -231,52 +220,6 @@ module Beaker
     end
 
     ##
-    # Setup SSL options for Kubeclient
-    # @param [Hash] context_config The context configuration
-    # @return [Hash] SSL options
-    def setup_ssl_options(context_config)
-      ssl_options = {}
-      cluster_config = context_config['cluster']
-
-      if cluster_config['certificate-authority-data']
-        ca_cert = Base64.decode64(cluster_config['certificate-authority-data'])
-        ssl_options[:ca_file] = write_temp_file('ca-cert', ca_cert)
-      elsif cluster_config['certificate-authority']
-        ssl_options[:ca_file] = cluster_config['certificate-authority']
-      end
-
-      ssl_options[:verify_ssl] = false if cluster_config['insecure-skip-tls-verify']
-
-      ssl_options
-    end
-
-    ##
-    # Setup authentication options for Kubeclient
-    # @param [Hash] context_config The context configuration
-    # @return [Hash] Auth options
-    def setup_auth_options(context_config)
-      auth_options = {}
-      user_config = context_config['user']
-
-      if user_config['token']
-        auth_options[:bearer_token] = user_config['token']
-      elsif user_config['tokenFile']
-        auth_options[:bearer_token_file] = user_config['tokenFile']
-      elsif user_config['client-certificate-data'] && user_config['client-key-data']
-        client_cert = Base64.decode64(user_config['client-certificate-data'])
-        client_key = Base64.decode64(user_config['client-key-data'])
-
-        auth_options[:client_cert] = write_temp_file('client-cert', client_cert)
-        auth_options[:client_key] = write_temp_file('client-key', client_key)
-      elsif user_config['client-certificate'] && user_config['client-key']
-        auth_options[:client_cert] = user_config['client-certificate']
-        auth_options[:client_key] = user_config['client-key']
-      end
-
-      auth_options
-    end
-
-    ##
     # Write content to a temporary file
     # @param [String] prefix File prefix
     # @param [String] content File content
@@ -300,6 +243,21 @@ module Beaker
       end
     rescue StandardError => e
       @logger.debug("Error cleaning up services for VM #{vm_name}: #{e}")
+    end
+
+    ##
+    # Recursively convert hash keys to symbols
+    def symbolize_keys(obj)
+      case obj
+      when Hash
+        obj.each_with_object({}) do |(k, v), memo|
+          memo[k.to_sym] = symbolize_keys(v)
+        end
+      when Array
+        obj.map { |v| symbolize_keys(v) }
+      else
+        obj
+      end
     end
   end
 end

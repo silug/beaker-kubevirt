@@ -22,7 +22,7 @@ end
 
 module Beaker
   # Beaker support for KubeVirt virtualization platform
-  class KubeVirt < Beaker::Hypervisor
+  class Kubevirt < Beaker::Hypervisor
     SLEEPWAIT = 5
     SSH_TIMEOUT = 300
 
@@ -209,7 +209,11 @@ module Beaker
                   'cores' => cpu.to_i,
                 },
                 'memory' => {
-                  'guest' => memory,
+                  # If the memory is a plain number, assume MiB
+                  if memory =~ /^\d+$/
+                    memory = "#{memory}Mi"
+                  end
+                  'guest' => memory.to_s,
                 },
                 'devices' => {
                   'disks' => [
