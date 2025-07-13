@@ -46,9 +46,10 @@ module Beaker
 
       super
       @options = options
+      @options[:namespace] ||= 'default'
       @logger = options[:logger]
       @hosts = kubevirt_hosts
-      @kubevirt_helper = KubeVirtHelper.new(options)
+      @kubevirt_helper = KubeVirtHelper.new(@options)
       @test_group_identifier = "beaker-#{SecureRandom.hex(4)}"
     end
 
@@ -149,7 +150,7 @@ module Beaker
         cloud_init = cloud_init.merge(custom_init)
       end
 
-      Base64.strict_encode64("#cloud-config\n#{cloud_init.to_yaml}")
+      Base64.strict_encode64("#cloud-config\n#{cloud_init.to_yaml.gsub(/^---\n/, '')}")
     end
 
     ##
@@ -189,7 +190,9 @@ module Beaker
       # If the memory is a plain number, assume MiB
       memory = "#{memory}Mi" if /^\d+$/.match?(memory)
       vm_image = host['vm_image'] || @options[:vm_image]
+      # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
+      namespace = host['namespace'] || @options[:namespace]
 
       raise 'vm_image must be specified' unless vm_image
 
@@ -198,7 +201,7 @@ module Beaker
         'kind' => 'VirtualMachine',
         'metadata' => {
           'name' => vm_name,
-          'namespace' => @kubevirt_helper.namespace,
+          'namespace' => namespace,
           'labels' => {
             'beaker/test-group' => @test_group_identifier,
             'beaker/host' => host_name,
@@ -218,9 +221,21 @@ module Beaker
               'domain' => {
                 'cpu' => {
                   'cores' => cpu.to_i,
+                  'sockets' => 1,
+                  'threads' => 1,
                 },
                 'memory' => {
                   'guest' => memory.to_s,
+                },
+                'resources' => {
+                  'limits' => {
+                    'cpu' => cpu.to_s,
+                    'memory' => memory.to_s,
+                  },
+                  'requests' => {
+                    'cpu' => '125m',
+                    'memory' => '1Gi',
+                  },
                 },
                 'devices' => {
                   'disks' => [
@@ -241,16 +256,13 @@ module Beaker
                     {
                       'name' => 'default',
                       'bridge' => {},
+                      'model' => 'virtio',
                     },
                   ],
                 },
               },
-              'networks' => [
-                {
-                  'name' => 'default',
-                  'pod' => {},
-                },
-              ],
+              'hostname' => host_name,
+              'networks' => generate_networks_spec(host),
               'volumes' => [
                 generate_root_volume_spec(vm_image, host),
                 {
@@ -264,6 +276,31 @@ module Beaker
           },
         },
       }
+    end
+
+    ##
+    # Generate networks specification for the VM
+    # @param [Host] host The host configuration
+    # @return [Array] Networks specification
+    def generate_networks_spec(host)
+      if host['network_mode'] == 'multus'
+        # Multus network configuration
+        multus_networks = host['networks'] || []
+        multus_networks.map do |net|
+          {
+            'name' => net['name'],
+            'multus' => {
+              'networkName' => net['multus_network_name'],
+            },
+          }
+        end
+      else
+        # Default network configuration
+        [{
+          'name' => 'default',
+          'pod' => {},
+        }]
+      end
     end
 
     ##
@@ -291,7 +328,7 @@ module Beaker
             'storage' => {
               'resources' => {
                 'requests' => {
-                  'storage' => '10Gi', # Default size, can be overridden
+                  'storage' => host['disk_size'].to_s || '10Gi', # Default size, can be overridden
                 },
               },
             },
@@ -355,13 +392,16 @@ module Beaker
     # @param [Host] host The host to wait for
     def wait_for_vm_ready(host)
       vm_name = host['vm_name']
+      namespace = host['namespace'] || @options[:namespace]
       @logger.info("Waiting for VM #{vm_name} to be ready...")
 
       timeout = @options[:timeout] || 300
       start_time = Time.now
 
       loop do
-        vmi = @kubevirt_helper.get_vmi(vm_name)
+        require 'pry-byebug'
+        binding.pry
+        vmi = @kubevirt_helper.get_vmi(vm_name, namespace)
 
         if vmi && vmi.dig('status', 'phase') == 'Running'
           @logger.debug("VM #{vm_name} is running")
@@ -374,22 +414,22 @@ module Beaker
       end
 
       # Get VM IP address
-      setup_networking(host)
+      setup_networking(host, namespace)
     end
 
     ##
     # Setup networking for the VM
     # @param [Host] host The host to setup networking for
-    def setup_networking(host)
-      network_mode = @options[:network_mode] || 'port-forward'
+    def setup_networking(host, namespace)
+      network_mode = host['network_mode'] || 'port-forward'
 
       case network_mode
       when 'port-forward'
-        setup_port_forward(host)
+        setup_port_forward(host, namespace)
       when 'nodeport'
-        setup_nodeport(host)
+        setup_nodeport(host, namespace)
       when 'multus'
-        setup_multus_networking(host)
+        setup_multus_networking(host, namespace)
       else
         raise "Unsupported network mode: #{network_mode}"
       end
@@ -398,13 +438,13 @@ module Beaker
     ##
     # Setup port-forward networking
     # @param [Host] host The host
-    def setup_port_forward(host)
+    def setup_port_forward(host, namespace)
       vm_name = host['vm_name']
       local_port = find_free_port
 
       @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
 
-      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port, namespace)
       host['ip'] = '127.0.0.1'
       host['port'] = local_port
       host['ssh'] ||= {}
@@ -415,12 +455,12 @@ module Beaker
     ##
     # Setup NodePort networking
     # @param [Host] host The host
-    def setup_nodeport(host)
+    def setup_nodeport(host, namespace)
       vm_name = host['vm_name']
       service_name = "#{vm_name}-ssh"
 
       @logger.debug("Creating NodePort service for VM #{vm_name}")
-      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name)
+      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name, namespace)
 
       node_port = service.dig('spec', 'ports', 0, 'nodePort')
       node_ip = @kubevirt_helper.get_node_ip
@@ -435,12 +475,12 @@ module Beaker
     ##
     # Setup Multus networking (external bridge)
     # @param [Host] host The host
-    def setup_multus_networking(host)
+    def setup_multus_networking(host, namespace)
       vm_name = host['vm_name']
       @logger.debug("Getting external IP for VM #{vm_name} via Multus")
 
       # For Multus, we need to wait for the VM to get an external IP
-      external_ip = wait_for_external_ip(vm_name)
+      external_ip = wait_for_external_ip(vm_name, namespace)
 
       host['ip'] = external_ip
       host['port'] = 22
@@ -452,17 +492,21 @@ module Beaker
     # Wait for VM to get external IP via Multus
     # @param [String] vm_name The VM name
     # @return [String] External IP address
-    def wait_for_external_ip(vm_name)
+    def wait_for_external_ip(vm_name, namespace)
       timeout = @options[:timeout] || 300
       start_time = Time.now
 
       loop do
-        vmi = @kubevirt_helper.get_vmi(vm_name)
+        vmi = @kubevirt_helper.get_vmi(vm_name, namespace)
         interfaces = vmi.dig('status', 'interfaces')
 
         if interfaces
-          external_interface = interfaces.find { |iface| iface['name'] != 'default' }
-          return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
+          interfaces.each do |iface|
+            return iface['ipAddress'] && iface['ipAddress']
+          end
+          # TODO: Why was it filtering out the default interface?
+          # external_interface = interfaces.find { |iface| iface['name'] != 'default' }
+          # return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
         end
 
         raise "Timeout waiting for external IP for VM #{vm_name}" if Time.now - start_time > timeout

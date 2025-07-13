@@ -11,7 +11,6 @@ module Beaker
 
     def initialize(options)
       @options = options
-      @namespace = options[:namespace] || 'default'
       @kubeconfig_path = options[:kubeconfig] || ENV['KUBECONFIG'] || File.join(Dir.home, '.kube', 'config')
       @kubecontext = options[:kubecontext] || ENV.fetch('KUBECONTEXT', nil)
       @logger = options[:logger]
@@ -33,8 +32,8 @@ module Beaker
     # Get a virtual machine
     # @param [String] vm_name The VM name
     # @return [Hash] VM object
-    def get_vm(vm_name)
-      @kubevirt_client.get_virtual_machine(vm_name, @namespace)
+    def get_vm(vm_name, namespace)
+      @kubevirt_client.get_virtual_machine(vm_name, namespace)
     rescue Kubeclient::ResourceNotFoundError
       nil
     end
@@ -43,8 +42,8 @@ module Beaker
     # Get a virtual machine instance
     # @param [String] vmi_name The VMI name
     # @return [Hash] VMI object
-    def get_vmi(vmi_name)
-      @kubevirt_client.get_virtual_machine_instance(vmi_name, @namespace)
+    def get_vmi(vmi_name, namespace)
+      @kubevirt_client.get_virtual_machine_instance(vmi_name, namespace)
     rescue Kubeclient::ResourceNotFoundError
       nil
     end
@@ -52,9 +51,9 @@ module Beaker
     ##
     # Delete a virtual machine
     # @param [String] vm_name The VM name
-    def delete_vm(vm_name)
+    def delete_vm(vm_name, namespace)
       begin
-        @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
+        @kubevirt_client.delete_virtual_machine(vm_name, namespace)
         @logger.debug("Deleted VM #{vm_name}")
       rescue Kubeclient::ResourceNotFoundError
         @logger.debug("VM #{vm_name} not found during deletion")
@@ -70,13 +69,13 @@ module Beaker
     # @param [Integer] vm_port The VM port to forward
     # @param [Integer] local_port The local port to forward to
     # @return [Process] The port-forward process
-    def setup_port_forward(vm_name, vm_port, local_port)
+    def setup_port_forward(vm_name, vm_port, local_port, namespace)
       vmi_name = vm_name # VMI usually has the same name as VM
 
       cmd = [
         'kubectl',
         '--kubeconfig', @kubeconfig_path,
-        '--namespace', @namespace,
+        '--namespace', namespace,
         'port-forward',
         "vmi/#{vmi_name}",
         "#{local_port}:#{vm_port}",
@@ -93,13 +92,13 @@ module Beaker
     # @param [String] vm_name The VM name
     # @param [String] service_name The service name
     # @return [Hash] Service object
-    def create_nodeport_service(vm_name, service_name)
+    def create_nodeport_service(vm_name, service_name, namespace)
       service_spec = {
         'apiVersion' => 'v1',
         'kind' => 'Service',
         'metadata' => {
           'name' => service_name,
-          'namespace' => @namespace,
+          'namespace' => namespace,
           'labels' => {
             'beaker/vm' => vm_name,
           },
@@ -120,7 +119,7 @@ module Beaker
         },
       }
 
-      service_spec_sym = symbolize_keys(vm_spec)
+      service_spec_sym = symbolize_keys(service_spec)
       @k8s_client.create_service(service_spec_sym)
     end
 
