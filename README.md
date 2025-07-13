@@ -72,9 +72,11 @@ CONFIG:
 | `namespace` | Kubernetes namespace for VMs | Yes | `default` |
 | `vm_image` | VM image specification | Yes | - |
 | `network_mode` | Networking mode | No | `port-forward` |
+| `networks` | Custom network configuration | No | Auto-generated |
 | `ssh_key` | SSH public key path or content | Yes | Auto-detect from `~/.ssh/` |
 | `cpu` | CPU cores for VM | No | `1` |
 | `memory` | Memory for VM | No | `2Gi` |
+| `disk_size` | Size of the root disk | No | `10Gi` |
 | `cloud_init` | Custom cloud-init YAML | No | Auto-generated |
 
 ### VM Image Formats
