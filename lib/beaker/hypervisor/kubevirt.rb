@@ -90,6 +90,14 @@ module Beaker
       vm_name = generate_vm_name(host)
       host['vm_name'] = vm_name
 
+      # Generate DataVolume name if applicable and store it for consistency
+      vm_image = host['vm_image'] || @options[:vm_image]
+      if vm_image && vm_image.start_with?('http://', 'https://')
+        base_name = vm_image.split('/').last
+        # Create a unique datavolume name by including the VM name in it
+        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{base_name}-dv")
+      end
+
       cloud_init_data = generate_cloud_init(host)
       vm_spec = generate_vm_spec(host, vm_name, cloud_init_data)
 
@@ -178,6 +186,8 @@ module Beaker
     def generate_vm_spec(host, vm_name, cloud_init_data)
       cpu = host['cpu'] || @options[:cpu] || '1'
       memory = host['memory'] || @options[:memory] || '2Gi'
+      # If the memory is a plain number, assume MiB
+      memory = "#{memory}Mi" if /^\d+$/.match?(memory)
       vm_image = host['vm_image'] || @options[:vm_image]
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
@@ -196,6 +206,7 @@ module Beaker
         },
         'spec' => {
           'running' => true,
+          'dataVolumeTemplates' => generate_root_volume_dvtemplate(vm_image, host),
           'template' => {
             'metadata' => {
               'labels' => {
@@ -209,10 +220,6 @@ module Beaker
                   'cores' => cpu.to_i,
                 },
                 'memory' => {
-                  # If the memory is a plain number, assume MiB
-                  if memory =~ /^\d+$/
-                    memory = "#{memory}Mi"
-                  end
                   'guest' => memory.to_s,
                 },
                 'devices' => {
@@ -245,7 +252,7 @@ module Beaker
                 },
               ],
               'volumes' => [
-                generate_root_volume_spec(vm_image),
+                generate_root_volume_spec(vm_image, host),
                 {
                   'name' => 'cloudinitdisk',
                   'cloudInitNoCloud' => {
@@ -260,11 +267,62 @@ module Beaker
     end
 
     ##
+    # Generate a DataVolume Template for the root disk
+    # @param [String] vm_image The VM image specification
+    # @param [Host] host The host configuration
+    # @return [Array] DataVolumeTemplate specifications
+    def generate_root_volume_dvtemplate(vm_image, host)
+      return nil unless vm_image.start_with?('http://', 'https://')
+
+      # Use the dv_name from the current host, not the last one in the array
+      dv_name = host['dv_name']
+      host_name = host.respond_to?(:name) ? host.name : host['name']
+
+      [
+        {
+          'metadata' => {
+            'name' => dv_name,
+            'labels' => {
+              'beaker/test-group' => @test_group_identifier,
+              'beaker/host' => host_name,
+            },
+          },
+          'spec' => {
+            'storage' => {
+              'resources' => {
+                'requests' => {
+                  'storage' => '10Gi', # Default size, can be overridden
+                },
+              },
+            },
+            'source' => {
+              'http' => {
+                'url' => vm_image,
+              },
+            },
+          },
+        },
+      ]
+    end
+
+    ##
     # Generate root volume specification based on image type
     # @param [String] vm_image The VM image specification
+    # @param [Host] host The host configuration
     # @return [Hash] Volume specification
-    def generate_root_volume_spec(vm_image)
-      if vm_image.include?('/')
+    def generate_root_volume_spec(vm_image, host)
+      if vm_image.start_with?('http://', 'https://')
+        # DataVolume URL
+        # Use the dv_name from the current host, not the last one in the array
+        dv_name = host['dv_name']
+
+        {
+          'name' => 'rootdisk',
+          'dataVolume' => {
+            'name' => dv_name,
+          },
+        }
+      elsif vm_image.include?('/')
         # Container image
         {
           'name' => 'rootdisk',
@@ -465,6 +523,31 @@ module Beaker
 
         sleep 2
       end
+    end
+
+    ##
+    # Sanitize a string to make it RFC 1035 DNS label compliant
+    # - Lowercase
+    # - Only alphanumeric characters and hyphens
+    # - Start with a letter
+    # - End with an alphanumeric character
+    # - Maximum length of 63 characters
+    # @param [String] name The string to sanitize
+    # @return [String] RFC 1035 compliant string
+    def sanitize_k8s_name(name)
+      # Remove invalid characters, replace with hyphens
+      sanitized = name.downcase.gsub(/[^a-z0-9-]/, '-')
+
+      # Ensure it starts with a letter
+      sanitized = "x#{sanitized}" unless /[a-z]/.match?(sanitized[0])
+
+      # Ensure it doesn't end with a hyphen
+      sanitized = "#{sanitized}0" if sanitized[-1] == '-'
+
+      # Ensure it's not too long (max 63 chars for DNS label)
+      sanitized = sanitized[0..62] if sanitized.length > 63
+
+      sanitized
     end
   end
 end

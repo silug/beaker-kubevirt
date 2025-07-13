@@ -38,6 +38,7 @@ Gem::Specification.new do |spec|
   spec.add_runtime_dependency 'pstore'
 
   # Development dependencies
+  spec.add_development_dependency 'benchmark', '~> 0.1'
   spec.add_development_dependency 'pry', '~> 0.10'
   spec.add_development_dependency 'pry-byebug', '~> 3.9'
   spec.add_development_dependency 'rake', '~> 13.0'
@@ -45,6 +46,4 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency 'simplecov', '~> 0.22.0'
   spec.add_development_dependency 'voxpupuli-rubocop', '~> 2.8.0'
   spec.add_development_dependency 'yard', '~> 0.9'
-  spec.add_development_dependency 'benchmark', '~> 0.1'
-
 end

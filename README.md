@@ -83,7 +83,7 @@ The `vm_image` option supports several formats:
 
 - **Container image**: `quay.io/kubevirt/fedora-cloud-container-disk-demo`
 - **PVC reference**: `pvc:my-vm-disk` or just `my-vm-disk`
-- **DataVolume**: Configure separately via CDI
+- **DataVolume**: `http://example.com/my-datavolume.img` or `https://example.com/my-datavolume.img` NOTE: CDI must be installed in the cluster for DataVolume support.
 
 ### Network Modes
 
