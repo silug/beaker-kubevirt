@@ -29,6 +29,15 @@ module Beaker
     end
 
     ##
+    # Create a secret
+    # @param [Hash] secret_spec The secret specification
+    def create_secret(secret_spec)
+      # Convert all keys to symbols recursively
+      secret_spec_sym = symbolize_keys(secret_spec)
+      @k8s_client.create_secret(secret_spec_sym)
+    end
+
+    ##
     # Get a virtual machine
     # @param [String] vm_name The VM name
     # @return [Hash] VM object
@@ -52,15 +61,55 @@ module Beaker
     # Delete a virtual machine
     # @param [String] vm_name The VM name
     def delete_vm(vm_name, namespace)
-      begin
-        @kubevirt_client.delete_virtual_machine(vm_name, namespace)
-        @logger.debug("Deleted VM #{vm_name}")
-      rescue Kubeclient::ResourceNotFoundError
-        @logger.debug("VM #{vm_name} not found during deletion")
-      end
+      @kubevirt_client.delete_virtual_machine(vm_name, namespace)
+      @logger.debug("Deleted VM #{vm_name}")
+    rescue Kubeclient::ResourceNotFoundError
+      @logger.debug("VM #{vm_name} not found during deletion")
+    end
 
-      # Also clean up any associated services
-      cleanup_services(vm_name)
+    ##
+    # Cleanup VMs created by this test group
+    # @param [String] test_group_identifier The identifier for the test group
+    def cleanup_vms(test_group_identifier, namespace)
+      @logger.info("Cleaning up VMs for test group: #{test_group_identifier}")
+      vms = @kubevirt_client.get_virtual_machines(namespace: namespace,
+                                                  label_selector: "beaker/test-group=#{test_group_identifier}")
+      vms.each do |vm|
+        @kubevirt_client.delete_virtual_machine(vm.metadata.name, namespace)
+        @logger.debug("Deleted VM #{vm.metadata.name} for test group #{test_group_identifier}")
+      rescue Kubeclient::ResourceNotFoundError
+        @logger.debug("VM #{vm.metadata.name} not found during cleanup for test group #{test_group_identifier}")
+      end
+    end
+
+    ##
+    # Cleanup secrets associated with a test group
+    # @param [String] test_group_identifier The identifier for the test group
+    def cleanup_secrets(test_group_identifier, namespace)
+      @logger.info("Cleaning up secrets for test group: #{test_group_identifier}")
+      secrets = @k8s_client.get_secrets(namespace: namespace,
+                                        label_selector: "beaker/test-group=#{test_group_identifier}")
+      secrets.each do |secret|
+        @k8s_client.delete_secret(secret.metadata.name, namespace)
+        @logger.debug("Deleted secret #{secret.metadata.name} for test group #{test_group_identifier}")
+      rescue Kubeclient::ResourceNotFoundError
+        @logger.debug("Secret #{secret.metadata.name} not found during cleanup for test group #{test_group_identifier}")
+      end
+    end
+
+    ##
+    # Cleanup services associated with a test group
+    # @param [String] test_group_identifier The identifier for the test group
+    def cleanup_services(test_group_identifier, namespace)
+      @logger.info("Cleaning up services for test group: #{test_group_identifier}")
+      services = @k8s_client.get_services(namespace: namespace,
+                                          label_selector: "beaker/test-group=#{test_group_identifier}")
+      services.each do |service|
+        @k8s_client.delete_service(service.metadata.name, namespace)
+        @logger.debug("Deleted service #{service.metadata.name} for test group #{test_group_identifier}")
+      rescue Kubeclient::ResourceNotFoundError
+        @logger.debug("Service #{service.metadata.name} not found during cleanup for test group #{test_group_identifier}")
+      end
     end
 
     ##
@@ -228,20 +277,6 @@ module Beaker
       file.write(content)
       file.close
       file.path
-    end
-
-    ##
-    # Clean up services associated with a VM
-    # @param [String] vm_name The VM name
-    def cleanup_services(vm_name)
-      services = @k8s_client.get_services(namespace: @namespace,
-                                          label_selector: "beaker/vm=#{vm_name}")
-      services.each do |service|
-        @k8s_client.delete_service(service.metadata.name, @namespace)
-        @logger.debug("Deleted service #{service.metadata.name}")
-      end
-    rescue StandardError => e
-      @logger.debug("Error cleaning up services for VM #{vm_name}: #{e}")
     end
 
     ##

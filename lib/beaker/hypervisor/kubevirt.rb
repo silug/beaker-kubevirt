@@ -73,13 +73,27 @@ module Beaker
     def cleanup
       @logger.info('Cleaning up KubeVirt resources')
 
-      @hosts.each do |host|
-        next unless host['vm_name']
-
-        @kubevirt_helper.delete_vm(host['vm_name'])
-        host_name = host.respond_to?(:name) ? host.name : host['name']
-        @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
+      namespaces = @hosts.map { |host| host['namespace'] || @options[:namespace] }.uniq
+      namespaces.each do |namespace|
+        require 'pry-byebug'
+        binding.pry
+        @logger.info("Cleaning up resources in namespace: #{namespace}")
+        # Cleanup VMs associated with the test group
+        @kubevirt_helper.cleanup_vms(@test_group_identifier, namespace)
+        # Cleanup secrets associated with the test group
+        @kubevirt_helper.cleanup_secrets(@test_group_identifier, namespace)
+        # Cleanup services associated with the test group
+        @kubevirt_helper.cleanup_services(@test_group_identifier, namespace)
       end
+
+      # @hosts.each do |host|
+      #   next unless host['vm_name']
+
+      #   namespace = host['namespace'] || @options[:namespace]
+      #   @kubevirt_helper.delete_vm(host['vm_name'], namespace)
+      #   host_name = host.respond_to?(:name) ? host.name : host['name']
+      #   @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
+      # end
     end
 
     private
@@ -88,6 +102,7 @@ module Beaker
     # Create a single VM for the given host
     # @param [Host] host The host to create a VM for
     def create_vm(host)
+      namespace = host['namespace'] || @options[:namespace]
       vm_name = generate_vm_name(host)
       host['vm_name'] = vm_name
 
@@ -100,11 +115,49 @@ module Beaker
       end
 
       cloud_init_data = generate_cloud_init(host)
-      vm_spec = generate_vm_spec(host, vm_name, cloud_init_data)
+      cloud_init_secret_name = create_cloud_init_secret(host, namespace, cloud_init_data)
+
+      vm_spec = generate_vm_spec(host, vm_name, namespace, cloud_init_secret_name)
 
       @logger.debug("Creating KubeVirt VM #{vm_name} for #{host.name}")
       @kubevirt_helper.create_vm(vm_spec)
       @logger.info("Created KubeVirt VM #{vm_name}")
+    end
+
+    ##
+    # Create a secret holding the cloud-init data
+    # @param [Host] host The host configuration
+    # @param [String] namespace The Kubernetes namespace
+    # @param [String] cloud_init_data Base64 encoded cloud-init data
+    # @return [String] The name of the created secret
+    def create_cloud_init_secret(host, namespace, cloud_init_data)
+      namespace = host['namespace'] || @options[:namespace]
+      raise 'Namespace must be specified' unless namespace
+      raise 'Cloud-init data must be provided' unless cloud_init_data
+
+      secret_name = "#{host['vm_name']}-cloud-init"
+      @logger.debug("Creating cloud-init secret #{secret_name} in namespace #{namespace}")
+
+      secret_spec = {
+        'apiVersion' => 'v1',
+        'kind' => 'Secret',
+        'metadata' => {
+          'name' => secret_name,
+          'namespace' => namespace,
+          'labels' => {
+            'beaker/test-group' => @test_group_identifier,
+            'beaker/host' => host.respond_to?(:name) ? host.name : host['name'],
+          },
+        },
+        'type' => 'Opaque',
+        'data' => {
+          'userdata' => Base64.strict_encode64(cloud_init_data),
+        },
+      }
+
+      @kubevirt_helper.create_secret(secret_spec)
+      @logger.info("Created cloud-init secret #{secret_name} in namespace #{namespace}")
+      secret_name
     end
 
     ##
@@ -149,8 +202,11 @@ module Beaker
         custom_init = YAML.safe_load(@options[:cloud_init])
         cloud_init = cloud_init.merge(custom_init)
       end
-
-      Base64.strict_encode64("#cloud-config\n#{cloud_init.to_yaml.gsub(/^---\n/, '')}")
+      # It looks like the ssh-key is being wrapped to a new line by default, so we need to ensure it is properly formatted
+      cloud_init_yaml = Psych.dump(cloud_init, line_width: -1)
+      cloud_init_yaml.gsub!(/^---\n/, '') # Remove YAML document header
+      '#cloud-config' + "\n" + cloud_init_yaml
+      # Base64.strict_encode64("#cloud-config\n#{cloud_init_yaml}").strip
     end
 
     ##
@@ -184,7 +240,7 @@ module Beaker
     # @param [String] vm_name The VM name
     # @param [String] cloud_init_data Base64 encoded cloud-init data
     # @return [Hash] VM specification
-    def generate_vm_spec(host, vm_name, cloud_init_data)
+    def generate_vm_spec(host, vm_name, namespace, cloud_init_secret)
       cpu = host['cpu'] || @options[:cpu] || '1'
       memory = host['memory'] || @options[:memory] || '2Gi'
       # If the memory is a plain number, assume MiB
@@ -192,7 +248,6 @@ module Beaker
       vm_image = host['vm_image'] || @options[:vm_image]
       # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
-      namespace = host['namespace'] || @options[:namespace]
 
       raise 'vm_image must be specified' unless vm_image
 
@@ -268,7 +323,12 @@ module Beaker
                 {
                   'name' => 'cloudinitdisk',
                   'cloudInitNoCloud' => {
-                    'userData' => cloud_init_data,
+                    'networkDataSecretRef' => {
+                      'name' => cloud_init_secret,
+                    },
+                    'secretRef' => {
+                      'name' => cloud_init_secret,
+                    },
                   },
                 },
               ],
@@ -399,8 +459,6 @@ module Beaker
       start_time = Time.now
 
       loop do
-        require 'pry-byebug'
-        binding.pry
         vmi = @kubevirt_helper.get_vmi(vm_name, namespace)
 
         if vmi && vmi.dig('status', 'phase') == 'Running'
@@ -502,7 +560,7 @@ module Beaker
 
         if interfaces
           interfaces.each do |iface|
-            return iface['ipAddress'] && iface['ipAddress']
+            return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
           end
           # TODO: Why was it filtering out the default interface?
           # external_interface = interfaces.find { |iface| iface['name'] != 'default' }
