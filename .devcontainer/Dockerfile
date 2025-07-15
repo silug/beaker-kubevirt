@@ -13,6 +13,27 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 USER vscode
 WORKDIR /home/vscode
 
+RUN set -x; cd "$(mktemp -d)" && \
+  OS="$(uname | tr '[:upper:]' '[:lower:]')" && \
+  ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" && \
+  KREW="krew-${OS}_${ARCH}" && \
+  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/${KREW}.tar.gz" && \
+  tar zxvf "${KREW}.tar.gz" && \
+  ./"${KREW}" install krew
+
+# Add krew to PATH
+RUN cat >> /home/vscode/.bashrc <<EOF
+# Add krew to PATH
+export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+
+# Enable shell completion for kubectl
+source <(kubectl completion bash)
+
+alias k="kubectl"
+complete -o default -F __start_kubectl k# Add krew to PATH
+
+EOF
+
 COPY --chown=vscode:vscode .devcontainer/.pryrc ./
 RUN mkdir -p /home/vscode/.ssh && \
     chown -R vscode:vscode /home/vscode/.ssh && \

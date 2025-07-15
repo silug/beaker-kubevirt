@@ -30,7 +30,8 @@
 	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
 	"postCreateCommand": {
 		"Generate SSH Key": "ssh-keygen -N '' -t rsa -b 4096 -f /home/vscode/.ssh/id_rsa",
-		"Install Dependencies": "bundle install"
+		"Install Dependencies": "bundle install",
+		"Install Kubevirt krew plugin": "kubectl krew install virt"
 	},
 	"mounts": [
 		"source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind,consistency=cached",
