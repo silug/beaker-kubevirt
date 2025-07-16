@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Beaker::KubeVirt do
+RSpec.describe Beaker::Kubevirt do
   let(:options) do
     {
       logger: double('logger').as_null_object,
@@ -35,6 +35,16 @@ RSpec.describe Beaker::KubeVirt do
       expect(hypervisor).to be_instance_of(described_class)
       expect(hypervisor.instance_variable_get(:@hosts)).to eq(hosts)
       expect(hypervisor.instance_variable_get(:@options)).to eq(options)
+      expect(hypervisor.instance_variable_get(:@namespace)).to eq('beaker-test')
+    end
+
+    it 'requires namespace to be specified' do
+      options_without_namespace = options.dup
+      options_without_namespace.delete(:namespace)
+
+      expect {
+        described_class.new(hosts, options_without_namespace)
+      }.to raise_error('Namespace must be specified in options')
     end
 
     it 'generates a test group identifier' do
@@ -66,12 +76,10 @@ RSpec.describe Beaker::KubeVirt do
   describe '#cleanup' do
     let(:hypervisor) { described_class.new(hosts, options) }
 
-    before do
-      hosts[0]['vm_name'] = 'test-vm-name'
-    end
-
-    it 'deletes all VMs' do
-      expect(kubevirt_helper).to receive(:delete_vm).with('test-vm-name')
+    it 'cleans up resources by test group identifier' do
+      expect(kubevirt_helper).to receive(:cleanup_vms).with(anything, 'beaker-test')
+      expect(kubevirt_helper).to receive(:cleanup_secrets).with(anything, 'beaker-test')
+      expect(kubevirt_helper).to receive(:cleanup_services).with(anything, 'beaker-test')
 
       hypervisor.cleanup
     end
@@ -100,7 +108,7 @@ RSpec.describe Beaker::KubeVirt do
       cloud_init_volume = volumes.find { |v| v['name'] == 'cloudinitdisk' }
 
       expect(cloud_init_volume).not_to be_nil
-      expect(cloud_init_volume.dig('cloudInitNoCloud', 'userData')).to eq(cloud_init_data)
+      expect(cloud_init_volume.dig('cloudInitNoCloud', 'secretRef', 'name')).to eq(cloud_init_data)
     end
   end
 
@@ -108,15 +116,14 @@ RSpec.describe Beaker::KubeVirt do
     let(:hypervisor) { described_class.new(hosts, options) }
     let(:host) { { 'name' => 'test-host', 'user' => 'testuser' } }
 
-    it 'generates base64-encoded cloud-init data' do
+    it 'generates cloud-init YAML data' do
       allow(hypervisor).to receive(:find_ssh_public_key).and_return('ssh-rsa test-key')
 
       cloud_init_data = hypervisor.send(:generate_cloud_init, host)
-      decoded = Base64.strict_decode64(cloud_init_data)
 
-      expect(decoded).to include('#cloud-config')
-      expect(decoded).to include('testuser')
-      expect(decoded).to include('ssh-rsa test-key')
+      expect(cloud_init_data).to include('#cloud-config')
+      expect(cloud_init_data).to include('testuser')
+      expect(cloud_init_data).to include('ssh-rsa test-key')
     end
   end
 end

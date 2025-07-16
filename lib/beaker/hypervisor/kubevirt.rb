@@ -34,7 +34,7 @@ module Beaker
     #
     # @option options [String] :kubeconfig Path to kubeconfig file
     # @option options [String] :kubecontext Kubernetes context to use (optional)
-    # @option options [String] :namespace Kubernetes namespace for VMs
+    # @option options [String] :namespace Kubernetes namespace for VMs (required)
     # @option options [String] :vm_image Base VM image (PVC, container image, etc.)
     # @option options [String] :network_mode Network mode (port-forward, nodeport, multus)
     # @option options [String] :ssh_key SSH public key to inject
@@ -46,7 +46,8 @@ module Beaker
 
       super
       @options = options
-      @options[:namespace] ||= 'default'
+      @namespace = @options[:namespace]
+      raise 'Namespace must be specified in options' unless @namespace
       @logger = options[:logger]
       @hosts = kubevirt_hosts
       @kubevirt_helper = KubeVirtHelper.new(@options)
@@ -73,24 +74,18 @@ module Beaker
     def cleanup
       @logger.info('Cleaning up KubeVirt resources')
 
-      namespaces = @hosts.map { |host| host['namespace'] || @options[:namespace] }.uniq
-      namespaces.each do |namespace|
-        require 'pry-byebug'
-        binding.pry
-        @logger.info("Cleaning up resources in namespace: #{namespace}")
-        # Cleanup VMs associated with the test group
-        @kubevirt_helper.cleanup_vms(@test_group_identifier, namespace)
-        # Cleanup secrets associated with the test group
-        @kubevirt_helper.cleanup_secrets(@test_group_identifier, namespace)
-        # Cleanup services associated with the test group
-        @kubevirt_helper.cleanup_services(@test_group_identifier, namespace)
-      end
+      @logger.info("Cleaning up resources in namespace: #{@namespace}")
+      # Cleanup VMs associated with the test group
+      @kubevirt_helper.cleanup_vms(@test_group_identifier, @namespace)
+      # Cleanup secrets associated with the test group
+      @kubevirt_helper.cleanup_secrets(@test_group_identifier, @namespace)
+      # Cleanup services associated with the test group
+      @kubevirt_helper.cleanup_services(@test_group_identifier, @namespace)
 
       # @hosts.each do |host|
       #   next unless host['vm_name']
 
-      #   namespace = host['namespace'] || @options[:namespace]
-      #   @kubevirt_helper.delete_vm(host['vm_name'], namespace)
+      #   @kubevirt_helper.delete_vm(host['vm_name'], @namespace)
       #   host_name = host.respond_to?(:name) ? host.name : host['name']
       #   @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
       # end
@@ -102,7 +97,6 @@ module Beaker
     # Create a single VM for the given host
     # @param [Host] host The host to create a VM for
     def create_vm(host)
-      namespace = host['namespace'] || @options[:namespace]
       vm_name = generate_vm_name(host)
       host['vm_name'] = vm_name
 
@@ -115,9 +109,9 @@ module Beaker
       end
 
       cloud_init_data = generate_cloud_init(host)
-      cloud_init_secret_name = create_cloud_init_secret(host, namespace, cloud_init_data)
+      cloud_init_secret_name = create_cloud_init_secret(host, cloud_init_data)
 
-      vm_spec = generate_vm_spec(host, vm_name, namespace, cloud_init_secret_name)
+      vm_spec = generate_vm_spec(host, vm_name, cloud_init_secret_name)
 
       @logger.debug("Creating KubeVirt VM #{vm_name} for #{host.name}")
       @kubevirt_helper.create_vm(vm_spec)
@@ -127,23 +121,20 @@ module Beaker
     ##
     # Create a secret holding the cloud-init data
     # @param [Host] host The host configuration
-    # @param [String] namespace The Kubernetes namespace
     # @param [String] cloud_init_data Base64 encoded cloud-init data
     # @return [String] The name of the created secret
-    def create_cloud_init_secret(host, namespace, cloud_init_data)
-      namespace = host['namespace'] || @options[:namespace]
-      raise 'Namespace must be specified' unless namespace
+    def create_cloud_init_secret(host, cloud_init_data)
       raise 'Cloud-init data must be provided' unless cloud_init_data
 
       secret_name = "#{host['vm_name']}-cloud-init"
-      @logger.debug("Creating cloud-init secret #{secret_name} in namespace #{namespace}")
+      @logger.debug("Creating cloud-init secret #{secret_name} in namespace #{@namespace}")
 
       secret_spec = {
         'apiVersion' => 'v1',
         'kind' => 'Secret',
         'metadata' => {
           'name' => secret_name,
-          'namespace' => namespace,
+          'namespace' => @namespace,
           'labels' => {
             'beaker/test-group' => @test_group_identifier,
             'beaker/host' => host.respond_to?(:name) ? host.name : host['name'],
@@ -156,7 +147,7 @@ module Beaker
       }
 
       @kubevirt_helper.create_secret(secret_spec)
-      @logger.info("Created cloud-init secret #{secret_name} in namespace #{namespace}")
+      @logger.info("Created cloud-init secret #{secret_name} in namespace #{@namespace}")
       secret_name
     end
 
@@ -238,9 +229,9 @@ module Beaker
     # Generate VM specification for KubeVirt
     # @param [Host] host The host configuration
     # @param [String] vm_name The VM name
-    # @param [String] cloud_init_data Base64 encoded cloud-init data
+    # @param [String] cloud_init_secret Base64 encoded cloud-init data
     # @return [Hash] VM specification
-    def generate_vm_spec(host, vm_name, namespace, cloud_init_secret)
+    def generate_vm_spec(host, vm_name, cloud_init_secret)
       cpu = host['cpu'] || @options[:cpu] || '1'
       memory = host['memory'] || @options[:memory] || '2Gi'
       # If the memory is a plain number, assume MiB
@@ -256,7 +247,7 @@ module Beaker
         'kind' => 'VirtualMachine',
         'metadata' => {
           'name' => vm_name,
-          'namespace' => namespace,
+          'namespace' => @namespace,
           'labels' => {
             'beaker/test-group' => @test_group_identifier,
             'beaker/host' => host_name,
@@ -386,6 +377,7 @@ module Beaker
           },
           'spec' => {
             'storage' => {
+              'accessModes' => ['ReadWriteOnce'],
               'resources' => {
                 'requests' => {
                   'storage' => host['disk_size'].to_s || '10Gi', # Default size, can be overridden
@@ -452,14 +444,13 @@ module Beaker
     # @param [Host] host The host to wait for
     def wait_for_vm_ready(host)
       vm_name = host['vm_name']
-      namespace = host['namespace'] || @options[:namespace]
       @logger.info("Waiting for VM #{vm_name} to be ready...")
 
       timeout = @options[:timeout] || 300
       start_time = Time.now
 
       loop do
-        vmi = @kubevirt_helper.get_vmi(vm_name, namespace)
+        vmi = @kubevirt_helper.get_vmi(vm_name, @namespace)
 
         if vmi && vmi.dig('status', 'phase') == 'Running'
           @logger.debug("VM #{vm_name} is running")
@@ -472,22 +463,22 @@ module Beaker
       end
 
       # Get VM IP address
-      setup_networking(host, namespace)
+      setup_networking(host)
     end
 
     ##
     # Setup networking for the VM
     # @param [Host] host The host to setup networking for
-    def setup_networking(host, namespace)
+    def setup_networking(host)
       network_mode = host['network_mode'] || 'port-forward'
 
       case network_mode
       when 'port-forward'
-        setup_port_forward(host, namespace)
+        setup_port_forward(host)
       when 'nodeport'
-        setup_nodeport(host, namespace)
+        setup_nodeport(host)
       when 'multus'
-        setup_multus_networking(host, namespace)
+        setup_multus_networking(host)
       else
         raise "Unsupported network mode: #{network_mode}"
       end
@@ -496,13 +487,13 @@ module Beaker
     ##
     # Setup port-forward networking
     # @param [Host] host The host
-    def setup_port_forward(host, namespace)
+    def setup_port_forward(host)
       vm_name = host['vm_name']
       local_port = find_free_port
 
       @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
 
-      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port, namespace)
+      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port, @namespace)
       host['ip'] = '127.0.0.1'
       host['port'] = local_port
       host['ssh'] ||= {}
@@ -513,12 +504,12 @@ module Beaker
     ##
     # Setup NodePort networking
     # @param [Host] host The host
-    def setup_nodeport(host, namespace)
+    def setup_nodeport(host)
       vm_name = host['vm_name']
       service_name = "#{vm_name}-ssh"
 
       @logger.debug("Creating NodePort service for VM #{vm_name}")
-      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name, namespace)
+      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name, @namespace)
 
       node_port = service.dig('spec', 'ports', 0, 'nodePort')
       node_ip = @kubevirt_helper.get_node_ip
@@ -533,12 +524,12 @@ module Beaker
     ##
     # Setup Multus networking (external bridge)
     # @param [Host] host The host
-    def setup_multus_networking(host, namespace)
+    def setup_multus_networking(host)
       vm_name = host['vm_name']
       @logger.debug("Getting external IP for VM #{vm_name} via Multus")
 
       # For Multus, we need to wait for the VM to get an external IP
-      external_ip = wait_for_external_ip(vm_name, namespace)
+      external_ip = wait_for_external_ip(vm_name)
 
       host['ip'] = external_ip
       host['port'] = 22
@@ -550,12 +541,12 @@ module Beaker
     # Wait for VM to get external IP via Multus
     # @param [String] vm_name The VM name
     # @return [String] External IP address
-    def wait_for_external_ip(vm_name, namespace)
+    def wait_for_external_ip(vm_name)
       timeout = @options[:timeout] || 300
       start_time = Time.now
 
       loop do
-        vmi = @kubevirt_helper.get_vmi(vm_name, namespace)
+        vmi = @kubevirt_helper.get_vmi(vm_name, @namespace)
         interfaces = vmi.dig('status', 'interfaces')
 
         if interfaces
