@@ -11,6 +11,7 @@ module Beaker
 
     def initialize(options)
       @options = options
+      @namespace = options[:namespace] || 'default'
       @kubeconfig_path = options[:kubeconfig] || ENV['KUBECONFIG'] || File.join(Dir.home, '.kube', 'config')
       @kubecontext = options[:kubecontext] || ENV.fetch('KUBECONTEXT', nil)
       @logger = options[:logger]
@@ -41,8 +42,8 @@ module Beaker
     # Get a virtual machine
     # @param [String] vm_name The VM name
     # @return [Hash] VM object
-    def get_vm(vm_name, namespace)
-      @kubevirt_client.get_virtual_machine(vm_name, namespace)
+    def get_vm(vm_name)
+      @kubevirt_client.get_virtual_machine(vm_name, @namespace)
     rescue Kubeclient::ResourceNotFoundError
       nil
     end
@@ -51,8 +52,8 @@ module Beaker
     # Get a virtual machine instance
     # @param [String] vmi_name The VMI name
     # @return [Hash] VMI object
-    def get_vmi(vmi_name, namespace)
-      @kubevirt_client.get_virtual_machine_instance(vmi_name, namespace)
+    def get_vmi(vmi_name)
+      @kubevirt_client.get_virtual_machine_instance(vmi_name, @namespace)
     rescue Kubeclient::ResourceNotFoundError
       nil
     end
@@ -60,8 +61,8 @@ module Beaker
     ##
     # Delete a virtual machine
     # @param [String] vm_name The VM name
-    def delete_vm(vm_name, namespace)
-      @kubevirt_client.delete_virtual_machine(vm_name, namespace)
+    def delete_vm(vm_name)
+      @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
       @logger.debug("Deleted VM #{vm_name}")
     rescue Kubeclient::ResourceNotFoundError
       @logger.debug("VM #{vm_name} not found during deletion")
@@ -70,12 +71,12 @@ module Beaker
     ##
     # Cleanup VMs created by this test group
     # @param [String] test_group_identifier The identifier for the test group
-    def cleanup_vms(test_group_identifier, namespace)
+    def cleanup_vms(test_group_identifier)
       @logger.info("Cleaning up VMs for test group: #{test_group_identifier}")
-      vms = @kubevirt_client.get_virtual_machines(namespace: namespace,
+      vms = @kubevirt_client.get_virtual_machines(namespace: @namespace,
                                                   label_selector: "beaker/test-group=#{test_group_identifier}")
       vms.each do |vm|
-        @kubevirt_client.delete_virtual_machine(vm.metadata.name, namespace)
+        @kubevirt_client.delete_virtual_machine(vm.metadata.name, @namespace)
         @logger.debug("Deleted VM #{vm.metadata.name} for test group #{test_group_identifier}")
       rescue Kubeclient::ResourceNotFoundError
         @logger.debug("VM #{vm.metadata.name} not found during cleanup for test group #{test_group_identifier}")
@@ -85,12 +86,12 @@ module Beaker
     ##
     # Cleanup secrets associated with a test group
     # @param [String] test_group_identifier The identifier for the test group
-    def cleanup_secrets(test_group_identifier, namespace)
+    def cleanup_secrets(test_group_identifier)
       @logger.info("Cleaning up secrets for test group: #{test_group_identifier}")
-      secrets = @k8s_client.get_secrets(namespace: namespace,
+      secrets = @k8s_client.get_secrets(namespace: @namespace,
                                         label_selector: "beaker/test-group=#{test_group_identifier}")
       secrets.each do |secret|
-        @k8s_client.delete_secret(secret.metadata.name, namespace)
+        @k8s_client.delete_secret(secret.metadata.name, @namespace)
         @logger.debug("Deleted secret #{secret.metadata.name} for test group #{test_group_identifier}")
       rescue Kubeclient::ResourceNotFoundError
         @logger.debug("Secret #{secret.metadata.name} not found during cleanup for test group #{test_group_identifier}")
@@ -100,12 +101,12 @@ module Beaker
     ##
     # Cleanup services associated with a test group
     # @param [String] test_group_identifier The identifier for the test group
-    def cleanup_services(test_group_identifier, namespace)
+    def cleanup_services(test_group_identifier)
       @logger.info("Cleaning up services for test group: #{test_group_identifier}")
-      services = @k8s_client.get_services(namespace: namespace,
+      services = @k8s_client.get_services(namespace: @namespace,
                                           label_selector: "beaker/test-group=#{test_group_identifier}")
       services.each do |service|
-        @k8s_client.delete_service(service.metadata.name, namespace)
+        @k8s_client.delete_service(service.metadata.name, @namespace)
         @logger.debug("Deleted service #{service.metadata.name} for test group #{test_group_identifier}")
       rescue Kubeclient::ResourceNotFoundError
         @logger.debug("Service #{service.metadata.name} not found during cleanup for test group #{test_group_identifier}")
@@ -118,13 +119,13 @@ module Beaker
     # @param [Integer] vm_port The VM port to forward
     # @param [Integer] local_port The local port to forward to
     # @return [Process] The port-forward process
-    def setup_port_forward(vm_name, vm_port, local_port, namespace)
+    def setup_port_forward(vm_name, vm_port, local_port)
       vmi_name = vm_name # VMI usually has the same name as VM
 
       cmd = [
         'kubectl',
         '--kubeconfig', @kubeconfig_path,
-        '--namespace', namespace,
+        '--namespace', @namespace,
         'port-forward',
         "vmi/#{vmi_name}",
         "#{local_port}:#{vm_port}",
@@ -141,13 +142,13 @@ module Beaker
     # @param [String] vm_name The VM name
     # @param [String] service_name The service name
     # @return [Hash] Service object
-    def create_nodeport_service(vm_name, service_name, namespace)
+    def create_nodeport_service(vm_name, service_name)
       service_spec = {
         'apiVersion' => 'v1',
         'kind' => 'Service',
         'metadata' => {
           'name' => service_name,
-          'namespace' => namespace,
+          'namespace' => @namespace,
           'labels' => {
             'beaker/vm' => vm_name,
           },

@@ -77,9 +77,9 @@ RSpec.describe Beaker::Kubevirt do
     let(:hypervisor) { described_class.new(hosts, options) }
 
     it 'cleans up resources by test group identifier' do
-      expect(kubevirt_helper).to receive(:cleanup_vms).with(anything, 'beaker-test')
-      expect(kubevirt_helper).to receive(:cleanup_secrets).with(anything, 'beaker-test')
-      expect(kubevirt_helper).to receive(:cleanup_services).with(anything, 'beaker-test')
+      expect(kubevirt_helper).to receive(:cleanup_vms).with(anything)
+      expect(kubevirt_helper).to receive(:cleanup_secrets).with(anything)
+      expect(kubevirt_helper).to receive(:cleanup_services).with(anything)
 
       hypervisor.cleanup
     end

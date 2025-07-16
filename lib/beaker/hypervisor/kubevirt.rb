@@ -50,6 +50,7 @@ module Beaker
       raise 'Namespace must be specified in options' unless @namespace
       @logger = options[:logger]
       @hosts = kubevirt_hosts
+      # Ensure the helper gets the validated namespace
       @kubevirt_helper = KubeVirtHelper.new(@options)
       @test_group_identifier = "beaker-#{SecureRandom.hex(4)}"
     end
@@ -76,16 +77,16 @@ module Beaker
 
       @logger.info("Cleaning up resources in namespace: #{@namespace}")
       # Cleanup VMs associated with the test group
-      @kubevirt_helper.cleanup_vms(@test_group_identifier, @namespace)
+      @kubevirt_helper.cleanup_vms(@test_group_identifier)
       # Cleanup secrets associated with the test group
-      @kubevirt_helper.cleanup_secrets(@test_group_identifier, @namespace)
+      @kubevirt_helper.cleanup_secrets(@test_group_identifier)
       # Cleanup services associated with the test group
-      @kubevirt_helper.cleanup_services(@test_group_identifier, @namespace)
+      @kubevirt_helper.cleanup_services(@test_group_identifier)
 
       # @hosts.each do |host|
       #   next unless host['vm_name']
 
-      #   @kubevirt_helper.delete_vm(host['vm_name'], @namespace)
+      #   @kubevirt_helper.delete_vm(host['vm_name'])
       #   host_name = host.respond_to?(:name) ? host.name : host['name']
       #   @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
       # end
@@ -450,7 +451,7 @@ module Beaker
       start_time = Time.now
 
       loop do
-        vmi = @kubevirt_helper.get_vmi(vm_name, @namespace)
+        vmi = @kubevirt_helper.get_vmi(vm_name)
 
         if vmi && vmi.dig('status', 'phase') == 'Running'
           @logger.debug("VM #{vm_name} is running")
@@ -493,7 +494,7 @@ module Beaker
 
       @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
 
-      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port, @namespace)
+      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
       host['ip'] = '127.0.0.1'
       host['port'] = local_port
       host['ssh'] ||= {}
@@ -509,7 +510,7 @@ module Beaker
       service_name = "#{vm_name}-ssh"
 
       @logger.debug("Creating NodePort service for VM #{vm_name}")
-      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name, @namespace)
+      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name)
 
       node_port = service.dig('spec', 'ports', 0, 'nodePort')
       node_ip = @kubevirt_helper.get_node_ip
@@ -546,7 +547,7 @@ module Beaker
       start_time = Time.now
 
       loop do
-        vmi = @kubevirt_helper.get_vmi(vm_name, @namespace)
+        vmi = @kubevirt_helper.get_vmi(vm_name)
         interfaces = vmi.dig('status', 'interfaces')
 
         if interfaces
