@@ -12,8 +12,6 @@ hosts_config = {
     'centos-vm' => {
       'platform' => 'el-8-x86_64',
       'hypervisor' => 'kubevirt',
-      'kubeconfig' => '~/.kube/config',
-      'namespace' => 'beaker-tests',
       'vm_image' => 'quay.io/kubevirt/centos-stream8-container-disk-demo',
       'network_mode' => 'port-forward',
       'ssh_key' => '~/.ssh/id_rsa.pub',
@@ -23,8 +21,6 @@ hosts_config = {
     'ubuntu-vm' => {
       'platform' => 'ubuntu-20.04-x86_64',
       'hypervisor' => 'kubevirt',
-      'kubeconfig' => '~/.kube/config',
-      'namespace' => 'beaker-tests',
       'vm_image' => 'pvc:ubuntu-20-04-disk',
       'network_mode' => 'nodeport',
       'ssh_key' => '~/.ssh/id_rsa.pub',
@@ -33,6 +29,9 @@ hosts_config = {
     },
   },
   'CONFIG' => {
+    # Global KubeVirt configuration
+    'kubeconfig' => '~/.kube/config',
+    'namespace' => 'beaker-tests',  # required global setting
     'ssh' => {
       'auth_methods' => ['publickey'],
     },

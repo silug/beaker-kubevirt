@@ -48,9 +48,6 @@ HOSTS:
   centos-vm:
     platform: el-8-x86_64
     hypervisor: kubevirt
-    kubeconfig: ~/.kube/config
-    kubecontext: my-context  # optional
-    namespace: beaker-tests
     vm_image: quay.io/kubevirt/fedora-cloud-container-disk-demo
     network_mode: port-forward
     ssh_key: ~/.ssh/id_rsa.pub
@@ -58,6 +55,10 @@ HOSTS:
     memory: 4Gi
 
 CONFIG:
+  # Global KubeVirt configuration
+  kubeconfig: ~/.kube/config
+  kubecontext: my-context  # optional
+  namespace: beaker-tests  # required - namespace for all VMs
   ssh:
     password: beaker
     auth_methods: ['publickey', 'password']
@@ -65,19 +66,21 @@ CONFIG:
 
 ### Configuration Options
 
-| Option | Description | Required | Default |
-|--------|-------------|----------|---------|
-| `kubeconfig` | Path to kubeconfig file | Yes | `$KUBECONFIG` or `~/.kube/config` |
-| `kubecontext` | Kubernetes context to use | No | Current context |
-| `namespace` | Kubernetes namespace for VMs | Yes | `default` |
-| `vm_image` | VM image specification | Yes | - |
-| `network_mode` | Networking mode | No | `port-forward` |
-| `networks` | Custom network configuration | No | Auto-generated |
-| `ssh_key` | SSH public key path or content | Yes | Auto-detect from `~/.ssh/` |
-| `cpu` | CPU cores for VM | No | `1` |
-| `memory` | Memory for VM | No | `2Gi` |
-| `disk_size` | Size of the root disk | No | `10Gi` |
-| `cloud_init` | Custom cloud-init YAML | No | Auto-generated |
+| Option | Description | Required | Default | Location |
+|--------|-------------|----------|---------|----------|
+| `kubeconfig` | Path to kubeconfig file | Yes | `$KUBECONFIG` or `~/.kube/config` | CONFIG (global) |
+| `kubecontext` | Kubernetes context to use | No | Current context | CONFIG (global) |
+| `namespace` | Kubernetes namespace for VMs | **Yes** | `default` | **CONFIG (global)** |
+| `vm_image` | VM image specification | Yes | - | HOSTS (per-host) |
+| `network_mode` | Networking mode | No | `port-forward` | HOSTS (per-host) |
+| `networks` | Custom network configuration | No | Auto-generated | HOSTS (per-host) |
+| `ssh_key` | SSH public key path or content | Yes | Auto-detect from `~/.ssh/` | HOSTS (per-host) |
+| `cpu` | CPU cores for VM | No | `1` | HOSTS (per-host) |
+| `memory` | Memory for VM | No | `2Gi` | HOSTS (per-host) |
+| `disk_size` | Size of the root disk | No | `10Gi` | HOSTS (per-host) |
+| `cloud_init` | Custom cloud-init YAML | No | Auto-generated | HOSTS (per-host) |
+
+**Important**: The `namespace`, `kubeconfig`, and `kubecontext` options must be specified in the global `CONFIG` section, not per-host. All VMs will be created in the same Kubernetes namespace.
 
 ### VM Image Formats
 
@@ -101,8 +104,6 @@ HOSTS:
   puppet-agent:
     platform: el-8-x86_64
     hypervisor: kubevirt
-    kubeconfig: ~/.kube/config
-    namespace: beaker-tests
     vm_image: quay.io/kubevirt/centos-stream8-container-disk-demo
     network_mode: port-forward
     ssh_key: ~/.ssh/id_rsa.pub
@@ -110,6 +111,9 @@ HOSTS:
     memory: 4Gi
 
 CONFIG:
+  # Global KubeVirt configuration
+  kubeconfig: ~/.kube/config
+  namespace: beaker-tests
   ssh:
     auth_methods: ['publickey']
 ```
