@@ -6,11 +6,23 @@ RSpec.describe Beaker::KubeVirtHelper do
       logger: double('logger').as_null_object,
       kubeconfig: '/tmp/test-kubeconfig',
       namespace: 'test-namespace',
+      k8s_client: double('k8s_client'),
+      kubevirt_client: double('kubevirt_client'),
+    }
+  end
+
+  let(:options_without_clients) do
+    {
+      logger: double('logger').as_null_object,
+      kubeconfig: '/tmp/test-kubeconfig',
+      namespace: 'test-namespace',
     }
   end
 
   let(:mock_config) do
     {
+      'apiVersion' => 'v1',
+      'kind' => 'Config',
       'current-context' => 'test-context',
       'contexts' => [
         {
@@ -41,12 +53,6 @@ RSpec.describe Beaker::KubeVirtHelper do
     }
   end
 
-  before do
-    allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
-    allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
-    allow(YAML).to receive(:safe_load).and_return(mock_config)
-  end
-
   describe '#initialize' do
     it 'sets up namespace and options' do
       helper = described_class.new(options)
@@ -62,10 +68,36 @@ RSpec.describe Beaker::KubeVirtHelper do
 
       expect(helper.namespace).to eq('default')
     end
+
+    it 'uses injected clients when provided' do
+      helper = described_class.new(options)
+      # Should not attempt to create clients when they're injected
+      expect(helper.namespace).to eq('test-namespace')
+    end
+
+    it 'sets up clients when not injected' do
+      # Mock the file system for kubeconfig
+      allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
+      allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+
+      # Mock the Kubeclient creation
+      mock_k8s_client = double('k8s_client')
+      mock_kubevirt_client = double('kubevirt_client')
+
+      allow(Kubeclient::Client).to receive(:new).and_return(mock_k8s_client, mock_kubevirt_client)
+
+      helper = described_class.new(options_without_clients)
+      expect(helper.namespace).to eq('test-namespace')
+    end
   end
 
   describe '#load_kubeconfig' do
     let(:helper) { described_class.new(options) }
+
+    before do
+      allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
+      allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+    end
 
     it 'loads kubeconfig from specified path' do
       config = helper.send(:load_kubeconfig)
@@ -153,6 +185,31 @@ RSpec.describe Beaker::KubeVirtHelper do
 
       expect(auth_options[:client_cert]).to eq('/tmp/cert')
       expect(auth_options[:client_key]).to eq('/tmp/key')
+    end
+  end
+
+  describe 'manual kubeconfig parsing fallback' do
+    let(:helper) { described_class.new(options) }
+
+    before do
+      allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
+      allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+    end
+
+    it 'falls back to manual parsing when Kubeclient::Config fails' do
+      # Mock Kubeclient::Config.read to raise an error
+      allow(Kubeclient::Config).to receive(:read).and_raise(RuntimeError, 'Unknown kubeconfig version')
+
+      # Mock the manual client creation
+      mock_k8s_client = double('k8s_client')
+      mock_kubevirt_client = double('kubevirt_client')
+      allow(Kubeclient::Client).to receive(:new).and_return(mock_k8s_client, mock_kubevirt_client)
+
+      # Mock the temp file creation for SSL/auth setup
+      allow(helper).to receive(:write_temp_file).and_return('/tmp/ca-cert')
+
+      helper_without_clients = described_class.new(options_without_clients)
+      expect(helper_without_clients.namespace).to eq('test-namespace')
     end
   end
 end

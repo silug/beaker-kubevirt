@@ -3,6 +3,7 @@
 require 'kubeclient'
 require 'yaml'
 require 'tempfile'
+require 'base64'
 
 module Beaker
   # Helper class for KubeVirt operations
@@ -16,8 +17,15 @@ module Beaker
       @kubecontext = options[:kubecontext] || ENV.fetch('KUBECONTEXT', nil)
       @logger = options[:logger]
 
-      setup_kubernetes_client
-      setup_kubevirt_client
+      # Allow injection of clients for testing
+      @k8s_client = options[:k8s_client]
+      @kubevirt_client = options[:kubevirt_client]
+
+      # Only setup clients if not provided (for testing)
+      unless @k8s_client && @kubevirt_client
+        setup_kubernetes_client
+        setup_kubevirt_client
+      end
     end
 
     ##
@@ -209,26 +217,71 @@ module Beaker
     ##
     # Setup Kubernetes API client
     def setup_kubernetes_client
-      config = Kubeclient::Config.read(@kubeconfig_path)
-      context_config = config.context(@kubecontext)
-      @k8s_client = Kubeclient::Client.new(
-        context_config.api_endpoint,
-        'v1',
-        ssl_options: context_config.ssl_options,
-        auth_options: context_config.auth_options,
-      )
+      begin
+        config = Kubeclient::Config.read(@kubeconfig_path)
+        context_config = config.context(@kubecontext)
+        @k8s_client = Kubeclient::Client.new(
+          context_config.api_endpoint,
+          'v1',
+          ssl_options: context_config.ssl_options,
+          auth_options: context_config.auth_options,
+        )
+      rescue StandardError => e
+        # For testing or when Kubeclient can't parse, fall back to manual parsing
+        @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+        setup_kubernetes_client_manual
+      end
     end
 
     ##
     # Setup KubeVirt API client
     def setup_kubevirt_client
-      config = Kubeclient::Config.read(@kubeconfig_path)
-      context_config = config.context(@kubecontext)
-      @kubevirt_client = Kubeclient::Client.new(
-        context_config.api_endpoint + '/apis/kubevirt.io',
+      begin
+        config = Kubeclient::Config.read(@kubeconfig_path)
+        context_config = config.context(@kubecontext)
+        @kubevirt_client = Kubeclient::Client.new(
+          context_config.api_endpoint + '/apis/kubevirt.io',
+          'v1',
+          ssl_options: context_config.ssl_options,
+          auth_options: context_config.auth_options,
+        )
+      rescue StandardError => e
+        # For testing or when Kubeclient can't parse, fall back to manual parsing
+        @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+        setup_kubevirt_client_manual
+      end
+    end
+
+    ##
+    # Setup Kubernetes API client using manual kubeconfig parsing
+    def setup_kubernetes_client_manual
+      config = load_kubeconfig
+      context_config = get_context_config(config)
+      ssl_options = setup_ssl_options(context_config)
+      auth_options = setup_auth_options(context_config)
+
+      @k8s_client = Kubeclient::Client.new(
+        context_config['cluster']['server'],
         'v1',
-        ssl_options: context_config.ssl_options,
-        auth_options: context_config.auth_options,
+        ssl_options: ssl_options,
+        auth_options: auth_options,
+      )
+    end
+
+    ##
+    # Setup KubeVirt API client using manual kubeconfig parsing
+    def setup_kubevirt_client_manual
+      config = load_kubeconfig
+      context_config = get_context_config(config)
+      ssl_options = setup_ssl_options(context_config)
+      auth_options = setup_auth_options(context_config)
+
+      kubevirt_endpoint = context_config['cluster']['server'] + '/apis/kubevirt.io'
+      @kubevirt_client = Kubeclient::Client.new(
+        kubevirt_endpoint,
+        'v1',
+        ssl_options: ssl_options,
+        auth_options: auth_options,
       )
     end
 
@@ -293,6 +346,56 @@ module Beaker
       else
         obj
       end
+    end
+
+    ##
+    # Setup SSL options from context config
+    # @param [Hash] context_config The context configuration
+    # @return [Hash] SSL options for Kubeclient
+    def setup_ssl_options(context_config)
+      ssl_options = {}
+      cluster_config = context_config['cluster']
+
+      if cluster_config['certificate-authority-data']
+        ca_cert = Base64.strict_decode64(cluster_config['certificate-authority-data'])
+        ca_file_path = write_temp_file('ca-cert', ca_cert)
+        ssl_options[:ca_file] = ca_file_path
+      elsif cluster_config['certificate-authority']
+        ssl_options[:ca_file] = cluster_config['certificate-authority']
+      end
+
+      if cluster_config['insecure-skip-tls-verify']
+        ssl_options[:verify_ssl] = false
+      end
+
+      ssl_options
+    end
+
+    ##
+    # Setup auth options from context config
+    # @param [Hash] context_config The context configuration
+    # @return [Hash] Auth options for Kubeclient
+    def setup_auth_options(context_config)
+      auth_options = {}
+      user_config = context_config['user']
+
+      if user_config['token']
+        auth_options[:bearer_token] = user_config['token']
+      elsif user_config['client-certificate-data'] && user_config['client-key-data']
+        client_cert = Base64.strict_decode64(user_config['client-certificate-data'])
+        client_key = Base64.strict_decode64(user_config['client-key-data'])
+
+        cert_file_path = write_temp_file('client-cert', client_cert)
+        key_file_path = write_temp_file('client-key', client_key)
+
+        auth_options[:client_cert] = cert_file_path
+        auth_options[:client_key] = key_file_path
+      elsif user_config['client-certificate'] && user_config['client-key']
+        auth_options[:client_cert] = user_config['client-certificate']
+        auth_options[:client_key] = user_config['client-key']
+      end
+
+      auth_options
     end
   end
 end
