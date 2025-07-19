@@ -147,34 +147,6 @@ module Beaker
 
       @logger.error("Port forwarder failed to start for VM #{vm_name} on port #{vm_port}")
       raise "Port forwarder failed to start for VM #{vm_name} on port #{vm_port}"
-
-      # vmi_name = vm_name # VMI usually has the same name as VM
-
-      # @logger.debug("Setting up KubeVirt port forward from local port #{local_port} to VMI #{vmi_name}:#{vm_port}")
-
-      # # Create the WebSocket-based port forwarder
-      # port_forwarder = KubevirtPortForwarder.new(
-      #   kubeclient: @kubevirt_client,
-      #   namespace: @namespace,
-      #   vmi_name: vmi_name,
-      #   vm_port: vm_port,
-      #   local_port: local_port,
-      #   logger: @logger,
-      # )
-
-      # # Start the port forwarding in a background thread
-      # pid = fork do
-      #   port_forwarder.start
-      # rescue StandardError => e
-      #   @logger.error("Port forwarding failed: #{e.message}")
-      #   exit 1
-      # end
-
-      # # Give the forwarder a moment to start listening
-      # sleep(0.5)
-
-      # @logger.debug("Started port-forward process with PID #{pid}")
-      # pid
     end
 
     def forwarder_error_handler(error)

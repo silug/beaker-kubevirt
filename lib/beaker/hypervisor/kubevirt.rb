@@ -521,12 +521,6 @@ module Beaker
       @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
 
       @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
-      # port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
-      # host['ip'] = '127.0.0.1'
-      # host['port'] = local_port
-      # host['ssh'] ||= {}
-      # host['ssh']['port'] = local_port
-      # host['port_forward_process'] = port_forward_cmd
     end
 
     ##
