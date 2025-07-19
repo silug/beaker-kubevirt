@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'beaker/kubevirt'
 require 'beaker/hypervisor/kubevirt'
 require 'beaker/hypervisor/kubevirt_helper'
 

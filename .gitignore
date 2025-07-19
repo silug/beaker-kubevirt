@@ -12,3 +12,6 @@
 
 /vendor/
 /Gemfile.lock
+
+**/sut.log
+.kube/*

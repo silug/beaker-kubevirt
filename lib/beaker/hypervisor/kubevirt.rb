@@ -11,6 +11,18 @@ begin
 rescue LoadError
   # If beaker is not available, define a minimal Hypervisor base class
   module Beaker
+    # Beaker support for the KubeVirt virtualization platform.
+    #
+    # This class implements a Beaker hypervisor driver for managing virtual machines
+    # on a KubeVirt-enabled Kubernetes cluster. It provides methods for provisioning,
+    # configuring, and cleaning up VMs, as well as handling networking and SSH access.
+    #
+    # The class expects to be initialized with a list of host definitions and an options hash.
+    # It supports multiple network modes (port-forward, nodeport, multus) and integrates
+    # with KubeVirt's APIs for VM lifecycle management.
+    #
+    # @see https://kubevirt.io/ KubeVirt Documentation
+    # @see https://github.com/voxpupuli/beaker Beaker Documentation
     class Hypervisor
       def initialize(hosts, options)
         @hosts = hosts
@@ -22,7 +34,7 @@ end
 
 module Beaker
   # Beaker support for KubeVirt virtualization platform
-  class KubeVirt < Beaker::Hypervisor
+  class Kubevirt < Beaker::Hypervisor
     SLEEPWAIT = 5
     SSH_TIMEOUT = 300
 
@@ -34,7 +46,7 @@ module Beaker
     #
     # @option options [String] :kubeconfig Path to kubeconfig file
     # @option options [String] :kubecontext Kubernetes context to use (optional)
-    # @option options [String] :namespace Kubernetes namespace for VMs
+    # @option options [String] :namespace Kubernetes namespace for VMs (required)
     # @option options [String] :vm_image Base VM image (PVC, container image, etc.)
     # @option options [String] :network_mode Network mode (port-forward, nodeport, multus)
     # @option options [String] :ssh_key SSH public key to inject
@@ -46,15 +58,20 @@ module Beaker
 
       super
       @options = options
+      @namespace = @options[:namespace]
+      raise 'Namespace must be specified in options' unless @namespace
+
       @logger = options[:logger]
       @hosts = kubevirt_hosts
-      @kubevirt_helper = KubeVirtHelper.new(options)
+      # Ensure the helper gets the validated namespace
+      @kubevirt_helper = KubevirtHelper.new(@options)
       @test_group_identifier = "beaker-#{SecureRandom.hex(4)}"
     end
 
     ##
     # Create and configure virtual machines in KubeVirt
     def provision
+      # rubocop:disable Style/CombinableLoops
       @logger.info("Starting KubeVirt provisioning with identifier: #{@test_group_identifier}")
 
       @hosts.each do |host|
@@ -63,8 +80,10 @@ module Beaker
 
       @hosts.each do |host|
         wait_for_vm_ready(host)
-        setup_ssh_access(host)
+        # setup_ssh_access(host)
+        setup_networking(host)
       end
+      # rubocop:enable Style/CombinableLoops
     end
 
     ##
@@ -72,13 +91,21 @@ module Beaker
     def cleanup
       @logger.info('Cleaning up KubeVirt resources')
 
-      @hosts.each do |host|
-        next unless host['vm_name']
+      @logger.info("Cleaning up resources in namespace: #{@namespace}")
+      # Cleanup VMs associated with the test group
+      @kubevirt_helper.cleanup_vms(@test_group_identifier)
+      # Cleanup secrets associated with the test group
+      @kubevirt_helper.cleanup_secrets(@test_group_identifier)
+      # Cleanup services associated with the test group
+      @kubevirt_helper.cleanup_services(@test_group_identifier)
 
-        @kubevirt_helper.delete_vm(host['vm_name'])
-        host_name = host.respond_to?(:name) ? host.name : host['name']
-        @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
-      end
+      # @hosts.each do |host|
+      #   next unless host['vm_name']
+
+      #   @kubevirt_helper.delete_vm(host['vm_name'])
+      #   host_name = host.respond_to?(:name) ? host.name : host['name']
+      #   @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
+      # end
     end
 
     private
@@ -90,12 +117,55 @@ module Beaker
       vm_name = generate_vm_name(host)
       host['vm_name'] = vm_name
 
+      # Generate DataVolume name if applicable and store it for consistency
+      vm_image = host['vm_image'] || @options[:vm_image]
+      if vm_image&.start_with?('http://', 'https://')
+        base_name = vm_image.split('/').last
+        # Create a unique datavolume name by including the VM name in it
+        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{base_name}-dv")
+      end
+
       cloud_init_data = generate_cloud_init(host)
-      vm_spec = generate_vm_spec(host, vm_name, cloud_init_data)
+      cloud_init_secret_name = create_cloud_init_secret(host, cloud_init_data)
+
+      vm_spec = generate_vm_spec(host, vm_name, cloud_init_secret_name)
 
       @logger.debug("Creating KubeVirt VM #{vm_name} for #{host.name}")
       @kubevirt_helper.create_vm(vm_spec)
       @logger.info("Created KubeVirt VM #{vm_name}")
+    end
+
+    ##
+    # Create a secret holding the cloud-init data
+    # @param [Host] host The host configuration
+    # @param [String] cloud_init_data Base64 encoded cloud-init data
+    # @return [String] The name of the created secret
+    def create_cloud_init_secret(host, cloud_init_data)
+      raise 'Cloud-init data must be provided' unless cloud_init_data
+
+      secret_name = "#{host['vm_name']}-cloud-init"
+      @logger.debug("Creating cloud-init secret #{secret_name} in namespace #{@namespace}")
+
+      secret_spec = {
+        'apiVersion' => 'v1',
+        'kind' => 'Secret',
+        'metadata' => {
+          'name' => secret_name,
+          'namespace' => @namespace,
+          'labels' => {
+            'beaker/test-group' => @test_group_identifier,
+            'beaker/host' => host.respond_to?(:name) ? host.name : host['name'],
+          },
+        },
+        'type' => 'Opaque',
+        'data' => {
+          'userdata' => Base64.strict_encode64(cloud_init_data),
+        },
+      }
+
+      @kubevirt_helper.create_secret(secret_spec)
+      @logger.info("Created cloud-init secret #{secret_name} in namespace #{@namespace}")
+      secret_name
     end
 
     ##
@@ -140,8 +210,11 @@ module Beaker
         custom_init = YAML.safe_load(@options[:cloud_init])
         cloud_init = cloud_init.merge(custom_init)
       end
-
-      Base64.strict_encode64("#cloud-config\n#{cloud_init.to_yaml}")
+      # It looks like the ssh-key is being wrapped to a new line by default, so we need to ensure it is properly formatted
+      cloud_init_yaml = Psych.dump(cloud_init, line_width: -1)
+      cloud_init_yaml.gsub!(/^---\n/, '') # Remove YAML document header
+      "#cloud-config\n#{cloud_init_yaml}"
+      # Base64.strict_encode64("#cloud-config\n#{cloud_init_yaml}").strip
     end
 
     ##
@@ -173,12 +246,15 @@ module Beaker
     # Generate VM specification for KubeVirt
     # @param [Host] host The host configuration
     # @param [String] vm_name The VM name
-    # @param [String] cloud_init_data Base64 encoded cloud-init data
+    # @param [String] cloud_init_secret Base64 encoded cloud-init data
     # @return [Hash] VM specification
-    def generate_vm_spec(host, vm_name, cloud_init_data)
+    def generate_vm_spec(host, vm_name, cloud_init_secret)
       cpu = host['cpu'] || @options[:cpu] || '1'
       memory = host['memory'] || @options[:memory] || '2Gi'
+      # If the memory is a plain number, assume MiB
+      memory = "#{memory}Mi" if /^\d+$/.match?(memory)
       vm_image = host['vm_image'] || @options[:vm_image]
+      # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
       raise 'vm_image must be specified' unless vm_image
@@ -188,7 +264,7 @@ module Beaker
         'kind' => 'VirtualMachine',
         'metadata' => {
           'name' => vm_name,
-          'namespace' => @kubevirt_helper.namespace,
+          'namespace' => @namespace,
           'labels' => {
             'beaker/test-group' => @test_group_identifier,
             'beaker/host' => host_name,
@@ -196,6 +272,7 @@ module Beaker
         },
         'spec' => {
           'running' => true,
+          'dataVolumeTemplates' => generate_root_volume_dvtemplate(vm_image, host),
           'template' => {
             'metadata' => {
               'labels' => {
@@ -207,9 +284,21 @@ module Beaker
               'domain' => {
                 'cpu' => {
                   'cores' => cpu.to_i,
+                  'sockets' => 1,
+                  'threads' => 1,
                 },
                 'memory' => {
-                  'guest' => memory,
+                  'guest' => memory.to_s,
+                },
+                'resources' => {
+                  'limits' => {
+                    'cpu' => cpu.to_s,
+                    'memory' => memory.to_s,
+                  },
+                  'requests' => {
+                    'cpu' => '125m',
+                    'memory' => '1Gi',
+                  },
                 },
                 'devices' => {
                   'disks' => [
@@ -230,22 +319,24 @@ module Beaker
                     {
                       'name' => 'default',
                       'bridge' => {},
+                      'model' => 'virtio',
                     },
                   ],
                 },
               },
-              'networks' => [
-                {
-                  'name' => 'default',
-                  'pod' => {},
-                },
-              ],
+              'hostname' => host_name,
+              'networks' => generate_networks_spec(host),
               'volumes' => [
-                generate_root_volume_spec(vm_image),
+                generate_root_volume_spec(vm_image, host),
                 {
                   'name' => 'cloudinitdisk',
                   'cloudInitNoCloud' => {
-                    'userData' => cloud_init_data,
+                    'networkDataSecretRef' => {
+                      'name' => cloud_init_secret,
+                    },
+                    'secretRef' => {
+                      'name' => cloud_init_secret,
+                    },
                   },
                 },
               ],
@@ -256,11 +347,88 @@ module Beaker
     end
 
     ##
+    # Generate networks specification for the VM
+    # @param [Host] host The host configuration
+    # @return [Array] Networks specification
+    def generate_networks_spec(host)
+      if host['network_mode'] == 'multus'
+        # Multus network configuration
+        multus_networks = host['networks'] || []
+        multus_networks.map do |net|
+          {
+            'name' => net['name'],
+            'multus' => {
+              'networkName' => net['multus_network_name'],
+            },
+          }
+        end
+      else
+        # Default network configuration
+        [{
+          'name' => 'default',
+          'pod' => {},
+        }]
+      end
+    end
+
+    ##
+    # Generate a DataVolume Template for the root disk
+    # @param [String] vm_image The VM image specification
+    # @param [Host] host The host configuration
+    # @return [Array] DataVolumeTemplate specifications
+    def generate_root_volume_dvtemplate(vm_image, host)
+      return nil unless vm_image.start_with?('http://', 'https://')
+
+      # Use the dv_name from the current host, not the last one in the array
+      dv_name = host['dv_name']
+      host_name = host.respond_to?(:name) ? host.name : host['name']
+
+      [
+        {
+          'metadata' => {
+            'name' => dv_name,
+            'labels' => {
+              'beaker/test-group' => @test_group_identifier,
+              'beaker/host' => host_name,
+            },
+          },
+          'spec' => {
+            'storage' => {
+              'accessModes' => ['ReadWriteOnce'],
+              'resources' => {
+                'requests' => {
+                  'storage' => host['disk_size'].to_s || '10Gi', # Default size, can be overridden
+                },
+              },
+            },
+            'source' => {
+              'http' => {
+                'url' => vm_image,
+              },
+            },
+          },
+        },
+      ]
+    end
+
+    ##
     # Generate root volume specification based on image type
     # @param [String] vm_image The VM image specification
+    # @param [Host] host The host configuration
     # @return [Hash] Volume specification
-    def generate_root_volume_spec(vm_image)
-      if vm_image.include?('/')
+    def generate_root_volume_spec(vm_image, host)
+      if vm_image.start_with?('http://', 'https://')
+        # DataVolume URL
+        # Use the dv_name from the current host, not the last one in the array
+        dv_name = host['dv_name']
+
+        {
+          'name' => 'rootdisk',
+          'dataVolume' => {
+            'name' => dv_name,
+          },
+        }
+      elsif vm_image.include?('/')
         # Container image
         {
           'name' => 'rootdisk',
@@ -311,15 +479,15 @@ module Beaker
         sleep SLEEPWAIT
       end
 
-      # Get VM IP address
-      setup_networking(host)
+      # Setup networking (port forwarder will handle SSH readiness at connection time)
+      # setup_networking(host)
     end
 
     ##
     # Setup networking for the VM
     # @param [Host] host The host to setup networking for
     def setup_networking(host)
-      network_mode = @options[:network_mode] || 'port-forward'
+      network_mode = host['network_mode'] || 'port-forward'
 
       case network_mode
       when 'port-forward'
@@ -337,17 +505,22 @@ module Beaker
     # Setup port-forward networking
     # @param [Host] host The host
     def setup_port_forward(host)
+      require 'beaker/hypervisor/port_forward'
       vm_name = host['vm_name']
+
       local_port = find_free_port
+
+      host['ip'] = '127.0.0.1' # Port forwarding will use localhost
+      host['port'] = local_port # Default SSH port
+      host['ssh'] ||= {}
+      host['ssh']['port'] = local_port
 
       @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
 
-      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
-      host['ip'] = '127.0.0.1'
-      host['port'] = local_port
-      host['ssh'] ||= {}
-      host['ssh']['port'] = local_port
-      host['port_forward_process'] = port_forward_cmd
+      # TODO: This is a placeholder for the actual port on the VM
+      @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+
+      @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
     end
 
     ##
@@ -361,7 +534,7 @@ module Beaker
       service = @kubevirt_helper.create_nodeport_service(vm_name, service_name)
 
       node_port = service.dig('spec', 'ports', 0, 'nodePort')
-      node_ip = @kubevirt_helper.get_node_ip
+      node_ip = @kubevirt_helper.node_ip
 
       host['ip'] = node_ip
       host['port'] = node_port
@@ -398,9 +571,11 @@ module Beaker
         vmi = @kubevirt_helper.get_vmi(vm_name)
         interfaces = vmi.dig('status', 'interfaces')
 
-        if interfaces
-          external_interface = interfaces.find { |iface| iface['name'] != 'default' }
-          return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
+        interfaces&.each do |iface|
+          return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
+          # TODO: Why was it filtering out the default interface?
+          # external_interface = interfaces.find { |iface| iface['name'] != 'default' }
+          # return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
         end
 
         raise "Timeout waiting for external IP for VM #{vm_name}" if Time.now - start_time > timeout
@@ -461,6 +636,31 @@ module Beaker
 
         sleep 2
       end
+    end
+
+    ##
+    # Sanitize a string to make it RFC 1035 DNS label compliant
+    # - Lowercase
+    # - Only alphanumeric characters and hyphens
+    # - Start with a letter
+    # - End with an alphanumeric character
+    # - Maximum length of 63 characters
+    # @param [String] name The string to sanitize
+    # @return [String] RFC 1035 compliant string
+    def sanitize_k8s_name(name)
+      # Remove invalid characters, replace with hyphens
+      sanitized = name.downcase.gsub(/[^a-z0-9-]/, '-')
+
+      # Ensure it starts with a letter
+      sanitized = "x#{sanitized}" unless /[a-z]/.match?(sanitized[0])
+
+      # Ensure it doesn't end with a hyphen
+      sanitized = "#{sanitized}0" if sanitized[-1] == '-'
+
+      # Ensure it's not too long (max 63 chars for DNS label)
+      sanitized = sanitized[0..62] if sanitized.length > 63
+
+      sanitized
     end
   end
 end

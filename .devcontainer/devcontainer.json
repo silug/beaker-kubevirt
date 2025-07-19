@@ -1,0 +1,52 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ruby
+{
+	"name": "Ruby",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"build": {
+		// Use 'dockerfile' to specify a Dockerfile. More info: https://containers.dev/guide/dockerfile
+		"dockerfile": "Dockerfile",
+		// Use 'context' to specify the build context. More info: https://containers.dev/guide/dockerfile#build-context
+		"context": ".."
+		// Use 'args' to pass build arguments. More info: https://containers.dev/guide/dockerfile#build-args
+		// "args": {}
+	},
+	"features": {
+		"ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+		"ghcr.io/devcontainers-extra/features/kubectx-kubens:1": {}
+	},
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"ruby.useLanguageServer": true,
+				"ruby.lsp.debug": true
+			},
+			"extensions": [
+				"Shopify.ruby-lsp",
+				"adrientoub.base64utils"
+			]
+		}
+	},
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+	"postCreateCommand": {
+		"Generate SSH Key": "ssh-keygen -N '' -t rsa -b 4096 -f /home/vscode/.ssh/id_rsa",
+		"Install Dependencies": "bundle install",
+		"Install Kubevirt krew plugin": "kubectl krew install virt"
+	},
+	"mounts": [
+		"source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind,consistency=cached",
+		// Keep the bash history in a volume so it persists across container restarts
+		"source=projectname-bashhistory,target=/commandhistory,type=volume"
+	]
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "ruby --version",
+	// Configure tool-specific properties.
+	// "customizations": {},
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}

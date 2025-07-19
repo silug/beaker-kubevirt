@@ -11,7 +11,7 @@ begin
   task default: %i[spec rubocop]
 rescue LoadError
   # RuboCop is optional
-  task default: [:spec]
+  task default: [:spec] # rubocop:disable Rake/DuplicateTask
 end
 
 desc 'Run acceptance tests (requires KubeVirt cluster)'
