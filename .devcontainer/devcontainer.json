@@ -12,7 +12,8 @@
 		// "args": {}
 	},
 	"features": {
-		"ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {}
+		"ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+		"ghcr.io/devcontainers-extra/features/kubectx-kubens:1": {}
 	},
 	"customizations": {
 		"vscode": {
