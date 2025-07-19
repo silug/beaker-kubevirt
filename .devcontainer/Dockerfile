@@ -30,7 +30,7 @@ export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
 source <(kubectl completion bash)
 
 alias k="kubectl"
-complete -o default -F __start_kubectl k# Add krew to PATH
+complete -o default -F __start_kubectl k
 
 EOF
 
