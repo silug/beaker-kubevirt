@@ -48,6 +48,7 @@ module Beaker
       @options = options
       @namespace = @options[:namespace]
       raise 'Namespace must be specified in options' unless @namespace
+
       @logger = options[:logger]
       @hosts = kubevirt_hosts
       # Ensure the helper gets the validated namespace
@@ -66,7 +67,8 @@ module Beaker
 
       @hosts.each do |host|
         wait_for_vm_ready(host)
-        setup_ssh_access(host)
+        # setup_ssh_access(host)
+        setup_networking(host)
       end
     end
 
@@ -463,8 +465,8 @@ module Beaker
         sleep SLEEPWAIT
       end
 
-      # Get VM IP address
-      setup_networking(host)
+      # Setup networking (port forwarder will handle SSH readiness at connection time)
+      # setup_networking(host)
     end
 
     ##
@@ -489,17 +491,28 @@ module Beaker
     # Setup port-forward networking
     # @param [Host] host The host
     def setup_port_forward(host)
+      require 'beaker/hypervisor/port_forward'
       vm_name = host['vm_name']
+
       local_port = find_free_port
+
+      host['ip'] = '127.0.0.1' # Port forwarding will use localhost
+      host['port'] = local_port # Default SSH port
+      host['ssh'] ||= {}
+      host['ssh']['port'] = local_port
 
       @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
 
-      port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
-      host['ip'] = '127.0.0.1'
-      host['port'] = local_port
-      host['ssh'] ||= {}
-      host['ssh']['port'] = local_port
-      host['port_forward_process'] = port_forward_cmd
+      # TODO: This is a placeholder for the actual port on the VM
+      @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+
+      @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
+      # port_forward_cmd = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+      # host['ip'] = '127.0.0.1'
+      # host['port'] = local_port
+      # host['ssh'] ||= {}
+      # host['ssh']['port'] = local_port
+      # host['port_forward_process'] = port_forward_cmd
     end
 
     ##

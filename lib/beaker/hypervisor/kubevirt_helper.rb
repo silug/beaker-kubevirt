@@ -22,10 +22,10 @@ module Beaker
       @kubevirt_client = options[:kubevirt_client]
 
       # Only setup clients if not provided (for testing)
-      unless @k8s_client && @kubevirt_client
-        setup_kubernetes_client
-        setup_kubevirt_client
-      end
+      return if @k8s_client && @kubevirt_client
+
+      setup_kubernetes_client
+      setup_kubevirt_client
     end
 
     ##
@@ -128,21 +128,58 @@ module Beaker
     # @param [Integer] local_port The local port to forward to
     # @return [Process] The port-forward process
     def setup_port_forward(vm_name, vm_port, local_port)
-      vmi_name = vm_name # VMI usually has the same name as VM
+      require 'beaker/hypervisor/port_forward'
+      forwarder = KubeVirtPortForwarder.new(
+        kube_client: @kubevirt_client,
+        namespace: @namespace,
+        vmi_name: vm_name,
+        target_port: vm_port,
+        local_port: local_port,
+        logger: @logger,
+        on_error: method(:forwarder_error_handler),
+      )
 
-      cmd = [
-        'kubectl',
-        '--kubeconfig', @kubeconfig_path,
-        '--namespace', @namespace,
-        'port-forward',
-        "vmi/#{vmi_name}",
-        "#{local_port}:#{vm_port}",
-      ]
+      # Start the port forwarder in a background thread
+      forwarder.start
 
-      cmd += ['--context', @kubecontext] if @kubecontext
+      # Check if the forwarder started correctly.
+      return if forwarder.state == :running
 
-      @logger.debug("Starting port-forward: #{cmd.join(' ')}")
-      Process.spawn(*cmd)
+      @logger.error("Port forwarder failed to start for VM #{vm_name} on port #{vm_port}")
+      raise "Port forwarder failed to start for VM #{vm_name} on port #{vm_port}"
+
+      # vmi_name = vm_name # VMI usually has the same name as VM
+
+      # @logger.debug("Setting up KubeVirt port forward from local port #{local_port} to VMI #{vmi_name}:#{vm_port}")
+
+      # # Create the WebSocket-based port forwarder
+      # port_forwarder = KubevirtPortForwarder.new(
+      #   kubeclient: @kubevirt_client,
+      #   namespace: @namespace,
+      #   vmi_name: vmi_name,
+      #   vm_port: vm_port,
+      #   local_port: local_port,
+      #   logger: @logger,
+      # )
+
+      # # Start the port forwarding in a background thread
+      # pid = fork do
+      #   port_forwarder.start
+      # rescue StandardError => e
+      #   @logger.error("Port forwarding failed: #{e.message}")
+      #   exit 1
+      # end
+
+      # # Give the forwarder a moment to start listening
+      # sleep(0.5)
+
+      # @logger.debug("Started port-forward process with PID #{pid}")
+      # pid
+    end
+
+    def forwarder_error_handler(error)
+      @logger.error("Port forwarder error: #{error.message}")
+      # Optionally, you can implement retry logic or cleanup here
     end
 
     ##
@@ -217,39 +254,35 @@ module Beaker
     ##
     # Setup Kubernetes API client
     def setup_kubernetes_client
-      begin
-        config = Kubeclient::Config.read(@kubeconfig_path)
-        context_config = config.context(@kubecontext)
-        @k8s_client = Kubeclient::Client.new(
-          context_config.api_endpoint,
-          'v1',
-          ssl_options: context_config.ssl_options,
-          auth_options: context_config.auth_options,
-        )
-      rescue StandardError => e
-        # For testing or when Kubeclient can't parse, fall back to manual parsing
-        @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
-        setup_kubernetes_client_manual
-      end
+      config = Kubeclient::Config.read(@kubeconfig_path)
+      context_config = config.context(@kubecontext)
+      @k8s_client = Kubeclient::Client.new(
+        context_config.api_endpoint,
+        'v1',
+        ssl_options: context_config.ssl_options,
+        auth_options: context_config.auth_options,
+      )
+    rescue StandardError => e
+      # For testing or when Kubeclient can't parse, fall back to manual parsing
+      @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+      setup_kubernetes_client_manual
     end
 
     ##
     # Setup KubeVirt API client
     def setup_kubevirt_client
-      begin
-        config = Kubeclient::Config.read(@kubeconfig_path)
-        context_config = config.context(@kubecontext)
-        @kubevirt_client = Kubeclient::Client.new(
-          context_config.api_endpoint + '/apis/kubevirt.io',
-          'v1',
-          ssl_options: context_config.ssl_options,
-          auth_options: context_config.auth_options,
-        )
-      rescue StandardError => e
-        # For testing or when Kubeclient can't parse, fall back to manual parsing
-        @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
-        setup_kubevirt_client_manual
-      end
+      config = Kubeclient::Config.read(@kubeconfig_path)
+      context_config = config.context(@kubecontext)
+      @kubevirt_client = Kubeclient::Client.new(
+        context_config.api_endpoint + '/apis/kubevirt.io',
+        'v1',
+        ssl_options: context_config.ssl_options,
+        auth_options: context_config.auth_options,
+      )
+    rescue StandardError => e
+      # For testing or when Kubeclient can't parse, fall back to manual parsing
+      @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+      setup_kubevirt_client_manual
     end
 
     ##
@@ -364,9 +397,7 @@ module Beaker
         ssl_options[:ca_file] = cluster_config['certificate-authority']
       end
 
-      if cluster_config['insecure-skip-tls-verify']
-        ssl_options[:verify_ssl] = false
-      end
+      ssl_options[:verify_ssl] = false if cluster_config['insecure-skip-tls-verify']
 
       ssl_options
     end
