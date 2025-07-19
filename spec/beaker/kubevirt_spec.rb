@@ -24,7 +24,7 @@ RSpec.describe Beaker::Kubevirt do
   let(:kubevirt_helper) { instance_double('Beaker::KubeVirtHelper') }
 
   before do
-    allow(Beaker::KubeVirtHelper).to receive(:new).and_return(kubevirt_helper)
+    allow(Beaker::KubevirtHelper).to receive(:new).and_return(kubevirt_helper)
     allow(kubevirt_helper).to receive(:namespace).and_return('beaker-test')
   end
 
@@ -42,9 +42,9 @@ RSpec.describe Beaker::Kubevirt do
       options_without_namespace = options.dup
       options_without_namespace.delete(:namespace)
 
-      expect {
+      expect do
         described_class.new(hosts, options_without_namespace)
-      }.to raise_error('Namespace must be specified in options')
+      end.to raise_error('Namespace must be specified in options')
     end
 
     it 'generates a test group identifier' do

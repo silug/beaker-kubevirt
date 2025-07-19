@@ -1,9 +1,10 @@
+# frozen_string_literal: true
+
 require 'kubeclient'
 require 'faye/websocket'
 require 'eventmachine'
 require 'socket'
 require 'logger'
-require 'thread'
 require 'json'
 
 # KubeVirtPortForwarder acts as a local TCP proxy for a port on a KubeVirt VMI.
@@ -22,16 +23,16 @@ class KubeVirtPortForwarder
   # The subprotocol required by the Kubernetes API for multiplexed streaming.
   # This protocol defines channels for stdin, stdout, stderr, and a special
   # error channel, which allows for out-of-band error reporting.
-  STREAM_PROTOCOL = 'v4.channel.k8s.io'.freeze
+  STREAM_PROTOCOL = 'v4.channel.k8s.io'
 
   # A KubeVirt-specific subprotocol for a raw, un-multiplexed data stream.
-  PLAIN_STREAM_PROTOCOL = 'plain.kubevirt.io'.freeze
+  PLAIN_STREAM_PROTOCOL = 'plain.kubevirt.io'
 
   # The channel byte for the primary data stream (stdin/stdout).
-  DATA_CHANNEL = "\x00".freeze
+  DATA_CHANNEL = "\x00"
 
   # The channel byte for the error stream from the server.
-  ERROR_CHANNEL = "\x01".freeze
+  ERROR_CHANNEL = "\x01"
 
   # @param kube_client [Kubeclient::Client] An initialized kubeclient client.
   # @param namespace [String] The Kubernetes namespace of the VMI.
@@ -184,7 +185,7 @@ class KubeVirtPortForwarder
         protocols = [PLAIN_STREAM_PROTOCOL]
         ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: @kube_client.ssl_options)
 
-        ws.on :open do |event|
+        ws.on :open do |_event|
           @logger.debug("WebSocket connection opened. Negotiated protocol: '#{ws.protocol}'.")
           connection_status_q.push(ws)
         end
@@ -195,7 +196,8 @@ class KubeVirtPortForwarder
         ws.on :close do |event|
           err_msg = "WebSocket closed unexpectedly. Code: #{event.code}, Reason: #{event.reason}"
 
-          # Check for the HTTP response object within the close event, which faye-websocket provides on handshake failure.
+          # Check for the HTTP response object within the close event,
+          # which faye-websocket provides on handshake failure.
           if event.instance_variable_defined?(:@driver) && event.driver.instance_variable_defined?(:@http)
             http_response = event.driver.instance_variable_get(:@http)
             if http_response && http_response.code == 500 && http_response.body
@@ -212,7 +214,7 @@ class KubeVirtPortForwarder
           end
 
           @logger.warn(err_msg)
-          connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting > 0
+          connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting.positive?
         end
         # --- End of Fix ---
       end
@@ -249,7 +251,7 @@ class KubeVirtPortForwarder
           websocket.send(data)
         end
       end
-    rescue EOFError, IOError, Errno::ECONNRESET
+    rescue IOError, Errno::ECONNRESET
       @logger.debug('Client socket closed. Shutting down proxy.')
       begin
         websocket.close
@@ -265,9 +267,9 @@ class KubeVirtPortForwarder
         channel = payload[0]
         case channel
         when DATA_CHANNEL
-          client_socket.write(payload[1..-1])
+          client_socket.write(payload[1..])
         when ERROR_CHANNEL
-          report_error(RuntimeError.new("Received error from server: #{payload[1..-1].inspect}"))
+          report_error(RuntimeError.new("Received error from server: #{payload[1..].inspect}"))
         else
           @logger.warn("Received message on unknown channel: #{channel.inspect}. Treating as raw data.")
           client_socket.write(payload)
@@ -314,85 +316,5 @@ class KubeVirtPortForwarder
       @state = new_state
     end
     true
-  end
-end
-
-# =============================================================================
-# Usage Example
-# =============================================================================
-if __FILE__ == $0
-  # --- Configuration ---
-  KUBECONFIG_PATH = File.expand_path('~/.kube/config')
-  VMI_NAMESPACE = 'default'
-  VMI_NAME = 'my-test-vmi' # A VMI that has an SSH server running
-  TARGET_PORT = 22
-  LOCAL_PORT = 2222
-  # ---------------------
-
-  puts "Loading kubeconfig from #{KUBECONFIG_PATH}..."
-  begin
-    config = Kubeclient::Config.read(KUBECONFIG_PATH)
-    context = config.context
-    kube_client = Kubeclient::Client.new(
-      context.api_endpoint,
-      'v1',
-      ssl_options: context.ssl_options,
-      auth_options: context.auth_options,
-    )
-    kube_client.discover
-  rescue StandardError => e
-    puts "Failed to load kubeconfig or initialize client: #{e.message}"
-    exit 1
-  end
-  puts "Kubernetes client initialized for context '#{config.current_context}'."
-  puts "Connected to server version: #{kube_client.server_version}"
-
-  logger = Logger.new($stdout, level: :info)
-  errors = []
-  error_handler = ->(error) { errors << error }
-
-  forwarder = KubeVirtPortForwarder.new(
-    kube_client: kube_client,
-    namespace: VMI_NAMESPACE,
-    vmi_name: VMI_NAME,
-    target_port: TARGET_PORT,
-    local_port: LOCAL_PORT,
-    logger: logger,
-    on_error: error_handler,
-  )
-
-  begin
-    forwarder.start
-
-    unless forwarder.state == :running
-      puts 'Forwarder failed to start. Check logs for details.'
-      exit 1
-    end
-
-    puts "\n"
-    puts "Port forwarder is running. State: #{forwarder.state}"
-    puts "You can now connect to the VMI's port #{TARGET_PORT} via localhost:#{LOCAL_PORT}"
-    puts "Example: ssh user@127.0.0.1 -p #{LOCAL_PORT}"
-    puts 'This example will run for 30 seconds...'
-    puts "\n"
-
-    sleep 30
-  rescue Interrupt
-    puts "\nCaught interrupt signal."
-  ensure
-    puts 'Shutting down the port forwarder...'
-    forwarder.stop
-    puts "Shutdown complete. State: #{forwarder.state}"
-
-    if errors.any?
-      puts "\n--- Encountered #{errors.count} error(s) during execution: ---"
-      errors.each_with_index do |err, i|
-        puts "Error ##{i + 1}: #{err.class} - #{err.message}"
-        # puts err.backtrace.join("\n") # Uncomment for full stack trace
-        puts '--------------------'
-      end
-    else
-      puts "\nExecution finished without any captured errors."
-    end
   end
 end

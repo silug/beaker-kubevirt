@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Beaker::KubeVirtHelper do
+RSpec.describe Beaker::KubevirtHelper do
   let(:options) do
     {
       logger: double('logger').as_null_object,

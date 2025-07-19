@@ -7,7 +7,7 @@ require 'base64'
 
 module Beaker
   # Helper class for KubeVirt operations
-  class KubeVirtHelper
+  class KubevirtHelper
     attr_reader :namespace, :options
 
     def initialize(options)
@@ -221,7 +221,7 @@ module Beaker
     ##
     # Get a cluster node IP address
     # @return [String] Node IP address
-    def get_node_ip
+    def node_ip
       nodes = @k8s_client.get_nodes
       node = nodes.first
 
@@ -274,7 +274,7 @@ module Beaker
       config = Kubeclient::Config.read(@kubeconfig_path)
       context_config = config.context(@kubecontext)
       @kubevirt_client = Kubeclient::Client.new(
-        context_config.api_endpoint + '/apis/kubevirt.io',
+        "#{context_config.api_endpoint}/apis/kubevirt.io",
         'v1',
         ssl_options: context_config.ssl_options,
         auth_options: context_config.auth_options,
@@ -309,7 +309,7 @@ module Beaker
       ssl_options = setup_ssl_options(context_config)
       auth_options = setup_auth_options(context_config)
 
-      kubevirt_endpoint = context_config['cluster']['server'] + '/apis/kubevirt.io'
+      kubevirt_endpoint = "#{context_config['cluster']['server']}/apis/kubevirt.io"
       @kubevirt_client = Kubeclient::Client.new(
         kubevirt_endpoint,
         'v1',

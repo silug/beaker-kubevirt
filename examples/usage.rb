@@ -31,7 +31,7 @@ hosts_config = {
   'CONFIG' => {
     # Global KubeVirt configuration
     'kubeconfig' => '~/.kube/config',
-    'namespace' => 'beaker-tests',  # required global setting
+    'namespace' => 'beaker-tests', # required global setting
     'ssh' => {
       'auth_methods' => ['publickey'],
     },

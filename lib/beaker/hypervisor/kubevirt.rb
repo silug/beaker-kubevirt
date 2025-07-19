@@ -11,6 +11,18 @@ begin
 rescue LoadError
   # If beaker is not available, define a minimal Hypervisor base class
   module Beaker
+    # Beaker support for the KubeVirt virtualization platform.
+    #
+    # This class implements a Beaker hypervisor driver for managing virtual machines
+    # on a KubeVirt-enabled Kubernetes cluster. It provides methods for provisioning,
+    # configuring, and cleaning up VMs, as well as handling networking and SSH access.
+    #
+    # The class expects to be initialized with a list of host definitions and an options hash.
+    # It supports multiple network modes (port-forward, nodeport, multus) and integrates
+    # with KubeVirt's APIs for VM lifecycle management.
+    #
+    # @see https://kubevirt.io/ KubeVirt Documentation
+    # @see https://github.com/voxpupuli/beaker Beaker Documentation
     class Hypervisor
       def initialize(hosts, options)
         @hosts = hosts
@@ -52,13 +64,14 @@ module Beaker
       @logger = options[:logger]
       @hosts = kubevirt_hosts
       # Ensure the helper gets the validated namespace
-      @kubevirt_helper = KubeVirtHelper.new(@options)
+      @kubevirt_helper = KubevirtHelper.new(@options)
       @test_group_identifier = "beaker-#{SecureRandom.hex(4)}"
     end
 
     ##
     # Create and configure virtual machines in KubeVirt
     def provision
+      # rubocop:disable Style/CombinableLoops
       @logger.info("Starting KubeVirt provisioning with identifier: #{@test_group_identifier}")
 
       @hosts.each do |host|
@@ -70,6 +83,7 @@ module Beaker
         # setup_ssh_access(host)
         setup_networking(host)
       end
+      # rubocop:enable Style/CombinableLoops
     end
 
     ##
@@ -105,7 +119,7 @@ module Beaker
 
       # Generate DataVolume name if applicable and store it for consistency
       vm_image = host['vm_image'] || @options[:vm_image]
-      if vm_image && vm_image.start_with?('http://', 'https://')
+      if vm_image&.start_with?('http://', 'https://')
         base_name = vm_image.split('/').last
         # Create a unique datavolume name by including the VM name in it
         host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{base_name}-dv")
@@ -199,7 +213,7 @@ module Beaker
       # It looks like the ssh-key is being wrapped to a new line by default, so we need to ensure it is properly formatted
       cloud_init_yaml = Psych.dump(cloud_init, line_width: -1)
       cloud_init_yaml.gsub!(/^---\n/, '') # Remove YAML document header
-      '#cloud-config' + "\n" + cloud_init_yaml
+      "#cloud-config\n#{cloud_init_yaml}"
       # Base64.strict_encode64("#cloud-config\n#{cloud_init_yaml}").strip
     end
 
@@ -526,7 +540,7 @@ module Beaker
       service = @kubevirt_helper.create_nodeport_service(vm_name, service_name)
 
       node_port = service.dig('spec', 'ports', 0, 'nodePort')
-      node_ip = @kubevirt_helper.get_node_ip
+      node_ip = @kubevirt_helper.node_ip
 
       host['ip'] = node_ip
       host['port'] = node_port
@@ -563,10 +577,8 @@ module Beaker
         vmi = @kubevirt_helper.get_vmi(vm_name)
         interfaces = vmi.dig('status', 'interfaces')
 
-        if interfaces
-          interfaces.each do |iface|
-            return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
-          end
+        interfaces&.each do |iface|
+          return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
           # TODO: Why was it filtering out the default interface?
           # external_interface = interfaces.find { |iface| iface['name'] != 'default' }
           # return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
