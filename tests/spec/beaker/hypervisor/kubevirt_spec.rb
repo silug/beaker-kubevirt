@@ -3,8 +3,9 @@
 require 'beaker-rspec'
 require 'beaker/hypervisor/kubevirt'
 
-describe 'my kubevirt vm' do
+describe Beaker::Hypervisor::Kubevirt do
   it 'can run a command' do
-    on default, 'echo hello'
+    result = on default, 'echo hello'
+    expect(result.stdout).to match(/hello/)
   end
 end
