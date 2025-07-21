@@ -1,9 +1,19 @@
 # frozen_string_literal: true
 
-RSpec.describe Beaker::KubeVirtHelper do
+RSpec.describe Beaker::KubevirtHelper do
   let(:options) do
     {
-      logger: double('logger').as_null_object,
+      logger: instance_double(Logger).as_null_object,
+      kubeconfig: '/tmp/test-kubeconfig',
+      namespace: 'test-namespace',
+      k8s_client: instance_double(Kubeclient::Client),
+      kubevirt_client: instance_double(Kubeclient::Client),
+    }
+  end
+
+  let(:options_without_clients) do
+    {
+      logger: instance_double(Logger).as_null_object,
       kubeconfig: '/tmp/test-kubeconfig',
       namespace: 'test-namespace',
     }
@@ -11,6 +21,8 @@ RSpec.describe Beaker::KubeVirtHelper do
 
   let(:mock_config) do
     {
+      'apiVersion' => 'v1',
+      'kind' => 'Config',
       'current-context' => 'test-context',
       'contexts' => [
         {
@@ -41,18 +53,17 @@ RSpec.describe Beaker::KubeVirtHelper do
     }
   end
 
-  before do
-    allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
-    allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
-    allow(YAML).to receive(:safe_load).and_return(mock_config)
-  end
-
   describe '#initialize' do
-    it 'sets up namespace and options' do
-      helper = described_class.new(options)
+    context 'when setting up' do
+      let(:helper) { described_class.new(options) }
 
-      expect(helper.namespace).to eq('test-namespace')
-      expect(helper.options).to eq(options)
+      it 'sets the namespace' do
+        expect(helper.namespace).to eq('test-namespace')
+      end
+
+      it 'sets the options' do
+        expect(helper.options).to eq(options)
+      end
     end
 
     it 'defaults to default namespace' do
@@ -62,10 +73,52 @@ RSpec.describe Beaker::KubeVirtHelper do
 
       expect(helper.namespace).to eq('default')
     end
+
+    context 'when clients are injected' do
+      let(:helper) { described_class.new(options) }
+
+      it 'uses the injected k8s client' do
+        expect(helper.k8s_client).to be(options[:k8s_client])
+      end
+
+      it 'uses the injected kubevirt client' do
+        expect(helper.kubevirt_client).to be(options[:kubevirt_client])
+      end
+    end
+
+    context 'when clients are not injected' do
+      let(:clients) do
+        {
+          k8s: instance_double(Kubeclient::Client),
+          kubevirt: instance_double(Kubeclient::Client),
+        }
+      end
+      let(:helper) { described_class.new(options_without_clients) }
+
+      before do
+        allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
+        allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+        allow(Kubeclient::Client).to receive(:new).and_return(clients[:k8s], clients[:kubevirt])
+        helper.send(:setup_clients)
+      end
+
+      it 'sets up the k8s client' do
+        expect(helper.k8s_client).to be(clients[:k8s])
+      end
+
+      it 'sets up the kubevirt client' do
+        expect(helper.kubevirt_client).to be(clients[:kubevirt])
+      end
+    end
   end
 
   describe '#load_kubeconfig' do
     let(:helper) { described_class.new(options) }
+
+    before do
+      allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
+      allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+    end
 
     it 'loads kubeconfig from specified path' do
       config = helper.send(:load_kubeconfig)
@@ -81,11 +134,13 @@ RSpec.describe Beaker::KubeVirtHelper do
 
   describe '#get_context_config' do
     let(:helper) { described_class.new(options) }
+    let(:context_config) { helper.send(:get_context_config, mock_config) }
 
-    it 'returns context configuration' do
-      context_config = helper.send(:get_context_config, mock_config)
-
+    it 'returns the cluster server' do
       expect(context_config['cluster']['server']).to eq('https://kubernetes.example.com:6443')
+    end
+
+    it 'returns the user token' do
       expect(context_config['user']['token']).to eq('fake-token')
     end
 
@@ -126,33 +181,58 @@ RSpec.describe Beaker::KubeVirtHelper do
 
   describe '#setup_auth_options' do
     let(:helper) { described_class.new(options) }
-
-    it 'sets up bearer token auth' do
-      context_config = {
+    let(:context_config) do
+      {
         'user' => {
           'token' => 'test-token',
-        },
-      }
-
-      auth_options = helper.send(:setup_auth_options, context_config)
-
-      expect(auth_options[:bearer_token]).to eq('test-token')
-    end
-
-    it 'sets up client certificate auth' do
-      context_config = {
-        'user' => {
           'client-certificate-data' => Base64.strict_encode64('fake-cert'),
           'client-key-data' => Base64.strict_encode64('fake-key'),
         },
       }
+    end
 
-      allow(helper).to receive(:write_temp_file).and_return('/tmp/cert', '/tmp/key')
-
+    it 'sets up bearer token auth' do
       auth_options = helper.send(:setup_auth_options, context_config)
+      expect(auth_options[:bearer_token]).to eq('test-token')
+    end
 
+    it 'sets up client certificate auth' do
+      allow(helper).to receive(:write_temp_file).and_return('/tmp/cert', '/tmp/key')
+      auth_options = helper.send(:setup_auth_options, context_config)
       expect(auth_options[:client_cert]).to eq('/tmp/cert')
+    end
+
+    it 'sets up client key auth' do
+      allow(helper).to receive(:write_temp_file).and_return('/tmp/cert', '/tmp/key')
+      auth_options = helper.send(:setup_auth_options, context_config)
       expect(auth_options[:client_key]).to eq('/tmp/key')
+    end
+  end
+
+  describe 'manual kubeconfig parsing fallback' do
+    let(:clients) do
+      {
+        k8s: instance_double(Kubeclient::Client),
+        kubevirt: instance_double(Kubeclient::Client),
+      }
+    end
+    let(:helper) { described_class.new(options) }
+
+    before do
+      allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
+      allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+      allow(Kubeclient::Config).to receive(:read).and_raise(RuntimeError, 'Unknown kubeconfig version')
+      allow(Kubeclient::Client).to receive(:new).and_return(clients[:k8s], clients[:kubevirt])
+      allow(helper).to receive(:write_temp_file).and_return('/tmp/ca-cert')
+      helper.send(:setup_clients)
+    end
+
+    it 'sets up the k8s client' do
+      expect(helper.k8s_client).to be(clients[:k8s])
+    end
+
+    it 'sets up the kubevirt client' do
+      expect(helper.kubevirt_client).to be(clients[:kubevirt])
     end
   end
 end

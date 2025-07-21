@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'beaker/kubevirt'
 require 'beaker/hypervisor/kubevirt'
 require 'beaker/hypervisor/kubevirt_helper'
 
@@ -22,6 +21,6 @@ RSpec.configure do |config|
     stub_const('Kubeclient::ResourceNotFoundError', Class.new(StandardError))
 
     # Allow Kubeclient::Client to be instantiated
-    allow(Kubeclient::Client).to receive(:new).and_return(double('kubeclient').as_null_object)
+    allow(Kubeclient::Client).to receive(:new).and_return(instance_double(Kubeclient::Client).as_null_object)
   end
 end
