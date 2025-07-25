@@ -230,23 +230,22 @@ RSpec.describe Beaker::KubevirtHelper do
         namespace: 'test-namespace',
       }
     end
+    let(:kubevirt_helper) { described_class.new(options_without_clients) }
 
     before do
       allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
       allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
       allow(Kubeclient::Config).to receive(:read).and_raise(RuntimeError, 'Unknown kubeconfig version')
       allow(Kubeclient::Client).to receive(:new).and_return(clients[:k8s], clients[:kubevirt])
-      allow_any_instance_of(described_class).to receive(:write_temp_file).and_return('/tmp/ca-cert')
+      allow(kubevirt_helper).to receive(:write_temp_file).and_return('/tmp/ca-cert')
     end
 
     it 'sets up the k8s client' do
-      helper = described_class.new(options_without_clients)
-      expect(helper.k8s_client).to be(clients[:k8s])
+      expect(kubevirt_helper.k8s_client).to be(clients[:k8s])
     end
 
     it 'sets up the kubevirt client' do
-      helper = described_class.new(options_without_clients)
-      expect(helper.kubevirt_client).to be(clients[:kubevirt])
+      expect(kubevirt_helper.kubevirt_client).to be(clients[:kubevirt])
     end
   end
 end
