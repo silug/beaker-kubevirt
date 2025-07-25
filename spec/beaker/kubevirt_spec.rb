@@ -75,9 +75,11 @@ RSpec.describe Beaker::Kubevirt do
 
     context 'when provisioning' do
       before do
-        allow(hypervisor).to receive(:create_vm)
-        allow(hypervisor).to receive(:wait_for_vm_ready)
-        allow(hypervisor).to receive(:setup_ssh_access)
+        allow(hypervisor).to receive(:create_vm).and_return(true)
+        allow(hypervisor).to receive(:wait_for_vm_ready).and_return(true)
+        allow(hypervisor).to receive(:setup_networking).and_return(true)
+        allow(hypervisor).to receive(:setup_ssh_access).and_return(true)
+        allow(kubevirt_helper).to receive(:setup_port_forward).and_return(true)
         hypervisor.provision
       end
 
@@ -89,8 +91,8 @@ RSpec.describe Beaker::Kubevirt do
         expect(hypervisor).to have_received(:wait_for_vm_ready).with(hosts[0])
       end
 
-      it 'sets up ssh access' do
-        expect(hypervisor).to have_received(:setup_ssh_access).with(hosts[0])
+      it 'sets up networking' do
+        expect(hypervisor).to have_received(:setup_networking).with(hosts[0])
       end
     end
   end
@@ -129,7 +131,7 @@ RSpec.describe Beaker::Kubevirt do
         cloud_init_data: 'base64-encoded-cloud-init',
       }
     end
-    let(:vm_spec) { vm_spec_args[:hypervisor].send(:generate_vm_spec, **vm_spec_args.slice(:host, :vm_name, :cloud_init_data)) }
+    let(:vm_spec) { vm_spec_args[:hypervisor].send(:generate_vm_spec, vm_spec_args[:host], vm_spec_args[:vm_name], vm_spec_args[:cloud_init_data]) }
 
     it 'has the correct apiVersion' do
       expect(vm_spec['apiVersion']).to eq('kubevirt.io/v1')

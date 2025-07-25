@@ -8,7 +8,7 @@ require 'base64'
 module Beaker
   # Helper class for KubeVirt operations
   class KubevirtHelper
-    attr_reader :namespace, :options
+    attr_reader :namespace, :options, :k8s_client, :kubevirt_client
 
     def initialize(options)
       @options = options
