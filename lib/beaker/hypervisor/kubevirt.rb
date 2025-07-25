@@ -91,6 +91,25 @@ module Beaker
     def cleanup
       @logger.info('Cleaning up KubeVirt resources')
 
+      @hosts.each do |host|
+        next unless host['port_forwarder']
+
+        @logger.debug("Stopping port-forwarder for host: #{host.name}")
+        host['port_forwarder'].stop if host['port_forwarder'].respond_to?(:stop)
+        Timeout.timeout(10) do
+          loop do
+            break if host['port_forwarder'].state == :stopped
+
+            @logger.debug("Waiting for port-forwarder to stop for host: #{host.name}")
+            sleep 1
+          end
+        rescue Timeout::Error
+          @logger.warn("Port-forwarder for host #{host.name} did not stop in time")
+        rescue StandardError => e
+          @logger.error("Error stopping port-forwarder for host #{host.name}: #{e.message}")
+        end
+      end
+
       @logger.info("Cleaning up resources in namespace: #{@namespace}")
       # Cleanup VMs associated with the test group
       @kubevirt_helper.cleanup_vms(@test_group_identifier)
@@ -468,7 +487,6 @@ module Beaker
 
       loop do
         vmi = @kubevirt_helper.get_vmi(vm_name)
-
         if vmi && vmi.dig('status', 'phase') == 'Running'
           @logger.debug("VM #{vm_name} is running")
           break
@@ -478,9 +496,6 @@ module Beaker
 
         sleep SLEEPWAIT
       end
-
-      # Setup networking (port forwarder will handle SSH readiness at connection time)
-      # setup_networking(host)
     end
 
     ##
@@ -518,7 +533,7 @@ module Beaker
       @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
 
       # TODO: This is a placeholder for the actual port on the VM
-      @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+      host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
 
       @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
     end

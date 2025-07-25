@@ -143,7 +143,7 @@ module Beaker
       forwarder.start
 
       # Check if the forwarder started correctly.
-      return if forwarder.state == :running
+      return forwarder if forwarder.state == :running
 
       @logger.error("Port forwarder failed to start for VM #{vm_name} on port #{vm_port}")
       raise "Port forwarder failed to start for VM #{vm_name} on port #{vm_port}"

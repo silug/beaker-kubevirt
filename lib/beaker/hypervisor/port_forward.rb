@@ -139,7 +139,7 @@ class KubeVirtPortForwarder
   # Handles a single client connection from start to finish.
   # @param client_socket [TCPSocket] The socket connected to the client.
   def handle_connection(client_socket)
-    websocket = establish_websocket_with_retry(client_socket)
+    websocket = establish_websocket_with_retry(client_socket, retries: 1)
     if websocket
       @logger.info('Connection to VMI established. Proxying traffic.')
       proxy_traffic(client_socket, websocket)
@@ -190,33 +190,35 @@ class KubeVirtPortForwarder
           connection_status_q.push(ws)
         end
 
-        # --- Improved Error Reporting ---
         # This handler now attempts to parse the HTTP response body on a 500 error
         # to provide a more specific reason for the failure.
         ws.on :close do |event|
-          err_msg = "WebSocket closed unexpectedly. Code: #{event.code}, Reason: #{event.reason}"
+          if event.code == 1000 # Normal closure
+            @logger.info('WebSocket connection closed normally.')
+          else
+            err_msg = "WebSocket closed unexpectedly. Code: #{event.code}, Reason: #{event.reason}"
 
-          # Check for the HTTP response object within the close event,
-          # which faye-websocket provides on handshake failure.
-          if event.instance_variable_defined?(:@driver) && event.driver.instance_variable_defined?(:@http)
-            http_response = event.driver.instance_variable_get(:@http)
-            if http_response && http_response.code == 500 && http_response.body
-              begin
-                error_body = JSON.parse(http_response.body)
-                if error_body['message']
-                  # This is the actual root cause from the server.
-                  err_msg = "Server returned 500 Internal Server Error: #{error_body['message']}"
+            # Check for the HTTP response object within the close event,
+            # which faye-websocket provides on handshake failure.
+            if event.instance_variable_defined?(:@driver) && event.driver.instance_variable_defined?(:@http)
+              http_response = event.driver.instance_variable_get(:@http)
+              if http_response && http_response.code == 500 && http_response.body
+                begin
+                  error_body = JSON.parse(http_response.body)
+                  if error_body['message']
+                    # This is the actual root cause from the server.
+                    err_msg = "Server returned 500 Internal Server Error: #{error_body['message']}"
+                  end
+                rescue JSON::ParserError
+                  # Body was not valid JSON, stick with the original error.
                 end
-              rescue JSON::ParserError
-                # Body was not valid JSON, stick with the original error.
               end
             end
-          end
 
-          @logger.warn(err_msg)
-          connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting.positive?
+            @logger.warn(err_msg)
+            connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting.positive?
+          end
         end
-        # --- End of Fix ---
       end
 
       result = connection_status_q.pop
@@ -224,9 +226,10 @@ class KubeVirtPortForwarder
       return result if result.is_a?(Faye::WebSocket::Client)
 
       # Success!
-
-      @logger.warn("Attempt #{i + 1} failed. Retrying in #{delay} seconds...")
-      sleep delay
+      unless retries == 1
+        @logger.warn("Attempt #{i + 1} failed. Retrying in #{delay} seconds...")
+        sleep delay
+      end
     end
     nil # All retries failed.
   end
@@ -254,8 +257,13 @@ class KubeVirtPortForwarder
     rescue IOError, Errno::ECONNRESET
       @logger.debug('Client socket closed. Shutting down proxy.')
       begin
-        websocket.close
-      rescue StandardError
+        Timeout.timeout(5) do
+          websocket.close if websocket.ready_state == Faye::WebSocket::Client::OPEN
+        end
+      rescue Timeout::Error
+        @logger.warn('Timeout while closing WebSocket. It may have already been closed.')
+      rescue StandardError => e
+        @logger.warn("Failed to close WebSocket properly: #{e.message}")
         nil
       end
     end
