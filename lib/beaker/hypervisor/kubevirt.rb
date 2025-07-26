@@ -88,25 +88,27 @@ module Beaker
 
     ##
     # Shutdown and destroy virtual machines in KubeVirt
-    def cleanup
+    def cleanup(timeout: 10, delay: 1)
       @logger.info('Cleaning up KubeVirt resources')
 
       @hosts.each do |host|
         next unless host['port_forwarder']
 
-        @logger.debug("Stopping port-forwarder for host: #{host.name}")
+        host_name = host.respond_to?(:name) ? host.name : host['name']
+        @logger.debug("Stopping port-forwarder for host: #{host_name}")
         host['port_forwarder'].stop if host['port_forwarder'].respond_to?(:stop)
-        Timeout.timeout(10) do
+        Timeout.timeout(timeout) do
           loop do
             break if host['port_forwarder'].state == :stopped
 
-            @logger.debug("Waiting for port-forwarder to stop for host: #{host.name}")
-            sleep 1
+            @logger.debug("Waiting for port-forwarder to stop for host: #{host_name}")
+            sleep delay
           end
-        rescue Timeout::Error
-          @logger.warn("Port-forwarder for host #{host.name} did not stop in time")
+        rescue Timeout::Error => e
+          @logger.warn("Port-forwarder for host #{host_name} did not stop in time: ")
+          raise
         rescue StandardError => e
-          @logger.error("Error stopping port-forwarder for host #{host.name}: #{e.message}")
+          @logger.error("Error stopping port-forwarder for host #{host_name}: #{e}")
         end
       end
 
