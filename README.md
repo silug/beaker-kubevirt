@@ -148,4 +148,4 @@ Bug reports and pull requests are welcome on GitHub at https://github.com/voxpup
 
 ## License
 
-The gem is available as open source under the terms of the [Apache-2.0 License](https://opensource.org/licenses/Apache-2.0).
+The gem is available as open source under the terms of the [GNU Affero General Public License](https://www.gnu.org/licenses/agpl-3.0.en.html) as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.

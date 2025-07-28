@@ -11,7 +11,7 @@ Gem::Specification.new do |spec|
   spec.summary = 'KubeVirt hypervisor support for Beaker acceptance testing'
   spec.description = 'Enables Beaker to provision VMs using KubeVirt for automated acceptance testing of Puppet code.'
   spec.homepage = 'https://github.com/voxpupuli/beaker-kubevirt'
-  spec.license = 'Apache-2.0'
+  spec.license = 'AGPL-3.0-or-later'
   spec.required_ruby_version = '>= 2.7.0'
 
   spec.metadata['source_code_uri'] = spec.homepage
