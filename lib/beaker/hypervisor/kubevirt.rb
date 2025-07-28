@@ -438,8 +438,6 @@ module Beaker
     # @param [Host] host The host configuration
     # @return [Hash] Volume specification
     def generate_root_volume_spec(vm_image, host)
-      if vm_image.include?('://')
-      end
       if vm_image.start_with?('http://', 'https://')
         # DataVolume URL
         # Use the dv_name from the current host, not the last one in the array
@@ -587,11 +585,9 @@ module Beaker
         vmi = @kubevirt_helper.get_vmi(vm_name)
         interfaces = vmi.dig('status', 'interfaces')
 
-        interfaces&.each do |iface|
-          # return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
-          external_interface = interfaces.find { |iface| iface['name'] != 'default' }
-          return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
-        end
+        # return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
+        external_interface = interfaces.find { |iface| iface['name'] != 'default' }
+        return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
 
         raise "Timeout waiting for external IP for VM #{vm_name}" if Time.now - start_time > timeout
 
