@@ -70,12 +70,11 @@ RSpec.describe Beaker::Kubevirt do
     before do
       allow(hypervisor).to receive(:create_vm)
       allow(hypervisor).to receive(:wait_for_vm_ready)
-      allow(hypervisor).to receive(:setup_ssh_access)
     end
 
     context 'when provisioning' do
       before do
-        allow(hypervisor).to receive_messages(create_vm: true, wait_for_vm_ready: true, setup_networking: true, setup_ssh_access: true, setup_port_forward: true)
+        allow(hypervisor).to receive_messages(create_vm: true, wait_for_vm_ready: true, setup_networking: true, setup_port_forward: true)
         hypervisor.provision
       end
 
