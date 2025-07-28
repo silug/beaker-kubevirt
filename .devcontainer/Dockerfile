@@ -46,6 +46,4 @@ COPY --chown=vscode:vscode ../lib/beaker/kubevirt/version.rb ./lib/beaker/kubevi
 # 2. Install all dependencies using Bundler.
 # This is the time-consuming step that we want to cache.
 # It will only re-run if the .gemspec or Gemfile changes.
-RUN bundle install --jobs "$(nproc)" && \
-    cd /home/vscode && \
-    rm -rf /buildtmp/
+RUN bundle install --jobs "$(nproc)"
