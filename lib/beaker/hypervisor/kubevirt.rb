@@ -80,16 +80,41 @@ module Beaker
 
       @hosts.each do |host|
         wait_for_vm_ready(host)
-        # setup_ssh_access(host)
         setup_networking(host)
+      rescue StandardError, Interrupt => e
+        @logger.error("Error provisioning host #{host.name}: #{e.message}")
+        @logger.error("Cleaning up host #{host.name} due to provisioning failure")
+        cleanup
+        raise e
       end
       # rubocop:enable Style/CombinableLoops
     end
 
     ##
     # Shutdown and destroy virtual machines in KubeVirt
-    def cleanup
+    def cleanup(timeout: 10, delay: 1)
       @logger.info('Cleaning up KubeVirt resources')
+
+      @hosts.each do |host|
+        next unless host['port_forwarder']
+
+        host_name = host.respond_to?(:name) ? host.name : host['name']
+        @logger.debug("Stopping port-forwarder for host: #{host_name}")
+        host['port_forwarder'].stop if host['port_forwarder'].respond_to?(:stop)
+        Timeout.timeout(timeout) do
+          loop do
+            break if host['port_forwarder'].state == :stopped
+
+            @logger.debug("Waiting for port-forwarder to stop for host: #{host_name}")
+            sleep delay
+          end
+        rescue Timeout::Error
+          @logger.warn("Port-forwarder for host #{host_name} did not stop in time: ")
+          raise
+        rescue StandardError => e
+          @logger.error("Error stopping port-forwarder for host #{host_name}: #{e}")
+        end
+      end
 
       @logger.info("Cleaning up resources in namespace: #{@namespace}")
       # Cleanup VMs associated with the test group
@@ -152,10 +177,7 @@ module Beaker
         'metadata' => {
           'name' => secret_name,
           'namespace' => @namespace,
-          'labels' => {
-            'beaker/test-group' => @test_group_identifier,
-            'beaker/host' => host.respond_to?(:name) ? host.name : host['name'],
-          },
+          'labels' => get_labels(host),
         },
         'type' => 'Opaque',
         'data' => {
@@ -242,6 +264,13 @@ module Beaker
       end
     end
 
+    def get_labels(host)
+      {
+        'beaker/test-group' => @test_group_identifier,
+        'beaker/host' => host.respond_to?(:name) ? host.name : host['name'],
+      }
+    end
+
     ##
     # Generate VM specification for KubeVirt
     # @param [Host] host The host configuration
@@ -265,20 +294,16 @@ module Beaker
         'metadata' => {
           'name' => vm_name,
           'namespace' => @namespace,
-          'labels' => {
-            'beaker/test-group' => @test_group_identifier,
-            'beaker/host' => host_name,
-          },
+          'labels' => get_labels(host),
         },
         'spec' => {
           'running' => true,
           'dataVolumeTemplates' => generate_root_volume_dvtemplate(vm_image, host),
           'template' => {
             'metadata' => {
-              'labels' => {
-                'beaker/test-group' => @test_group_identifier,
-                'kubevirt.io/vm' => vm_name,
-              },
+              'labels' => get_labels(host).merge({
+                                                   'kubevirt.io/vm' => vm_name,
+                                                 }),
             },
             'spec' => {
               'domain' => {
@@ -381,20 +406,16 @@ module Beaker
 
       # Use the dv_name from the current host, not the last one in the array
       dv_name = host['dv_name']
-      host_name = host.respond_to?(:name) ? host.name : host['name']
 
       [
         {
           'metadata' => {
             'name' => dv_name,
-            'labels' => {
-              'beaker/test-group' => @test_group_identifier,
-              'beaker/host' => host_name,
-            },
+            'labels' => get_labels(host),
           },
           'spec' => {
             'storage' => {
-              'accessModes' => ['ReadWriteOnce'],
+              'accessModes' => ['ReadWriteOnce'], # NOTE: This keeps the VM from being live migrated
               'resources' => {
                 'requests' => {
                   'storage' => host['disk_size'].to_s || '10Gi', # Default size, can be overridden
@@ -428,25 +449,19 @@ module Beaker
             'name' => dv_name,
           },
         }
-      elsif vm_image.include?('/')
+      elsif vm_image.start_with?('docker://', 'oci://')
         # Container image
+        # KubeVirt supports container images as root disks
+        # but we need to ensure the image is available in the cluster
         {
           'name' => 'rootdisk',
           'containerDisk' => {
-            'image' => vm_image,
-          },
-        }
-      elsif vm_image.start_with?('pvc:')
-        # PVC reference
-        pvc_name = vm_image.sub(/^pvc:/, '')
-        {
-          'name' => 'rootdisk',
-          'persistentVolumeClaim' => {
-            'claimName' => pvc_name,
+            'image' => vm_image.sub(%r{^(docker|oci)://}, ''), # Remove protocol prefix
           },
         }
       else
-        # Assume it's a PVC name
+        # Assume it's a PVC namez
+        vm_image = vm_image.sub(%r{^pvc://}, '') if vm_image.start_with?('pvc://')
         {
           'name' => 'rootdisk',
           'persistentVolumeClaim' => {
@@ -464,23 +479,22 @@ module Beaker
       @logger.info("Waiting for VM #{vm_name} to be ready...")
 
       timeout = @options[:timeout] || 300
-      start_time = Time.now
-
-      loop do
-        vmi = @kubevirt_helper.get_vmi(vm_name)
-
-        if vmi && vmi.dig('status', 'phase') == 'Running'
-          @logger.debug("VM #{vm_name} is running")
-          break
+      begin
+        Timeout.timeout(timeout) do
+          # Wait for the VM to be created and running
+          loop do
+            vmi = @kubevirt_helper.get_vmi(vm_name)
+            if vmi && vmi.dig('status', 'phase') == 'Running'
+              @logger.debug("VM #{vm_name} is running")
+              break
+            end
+            sleep SLEEPWAIT
+          end
         end
-
-        raise "Timeout waiting for VM #{vm_name} to be ready" if Time.now - start_time > timeout
-
-        sleep SLEEPWAIT
+      rescue Timeout::Error
+        @logger.error("Timeout waiting for VM #{vm_name} to be ready")
+        raise
       end
-
-      # Setup networking (port forwarder will handle SSH readiness at connection time)
-      # setup_networking(host)
     end
 
     ##
@@ -518,7 +532,7 @@ module Beaker
       @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
 
       # TODO: This is a placeholder for the actual port on the VM
-      @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+      host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
 
       @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
     end
@@ -571,12 +585,9 @@ module Beaker
         vmi = @kubevirt_helper.get_vmi(vm_name)
         interfaces = vmi.dig('status', 'interfaces')
 
-        interfaces&.each do |iface|
-          return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
-          # TODO: Why was it filtering out the default interface?
-          # external_interface = interfaces.find { |iface| iface['name'] != 'default' }
-          # return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
-        end
+        # return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
+        external_interface = interfaces.find { |iface| iface['name'] != 'default' }
+        return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
 
         raise "Timeout waiting for external IP for VM #{vm_name}" if Time.now - start_time > timeout
 
@@ -592,25 +603,6 @@ module Beaker
       port = server.addr[1]
       server.close
       port
-    end
-
-    ##
-    # Setup SSH access for the host
-    # @param [Host] host The host to setup SSH for
-    def setup_ssh_access(host)
-      host_name = host.respond_to?(:name) ? host.name : host['name']
-      @logger.info("Setting up SSH access for #{host_name} at #{host['ip']}:#{host['port']}")
-
-      # Wait for SSH to be available
-      wait_for_ssh(host)
-
-      # Setup SSH keys if needed
-      return unless @options[:ssh_private_key]
-      return unless host.respond_to?(:options)
-
-      host.options ||= {}
-      host.options['ssh'] ||= {}
-      host.options['ssh']['keys'] = [@options[:ssh_private_key]]
     end
 
     ##

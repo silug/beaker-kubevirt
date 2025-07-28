@@ -7,8 +7,8 @@ HOSTS:
     cpu: 2
     network_mode: port-forward
     networks:
-      - name: default
-        multus_network_name: 'harvester-public/home-vlan9'
+      - name: multus-network
+        multus_network_name: 'my-network'
     disk_size: 21G
 CONFIG:
   namespace: beaker-tests  # moved to global config

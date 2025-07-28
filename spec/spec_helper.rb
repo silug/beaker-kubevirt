@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+require 'simplecov'
+
+SimpleCov.start
+
 require 'beaker/hypervisor/kubevirt'
 require 'beaker/hypervisor/kubevirt_helper'
 

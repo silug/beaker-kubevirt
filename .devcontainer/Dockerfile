@@ -3,23 +3,16 @@ FROM mcr.microsoft.com/devcontainers/ruby:1-3.4-bullseye
 RUN mkdir -p /buildtmp \
     && chown -R vscode:vscode /buildtmp
 
-# setup the container to preserve bash history across restarts
-RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
-    && mkdir /commandhistory \
-    && touch /commandhistory/.bash_history \
-    && chown -R vscode:vscode /commandhistory \
-    && echo "$SNIPPET" >> "/home/vscode/.bashrc"
-
 USER vscode
 WORKDIR /home/vscode
 
 RUN set -x; cd "$(mktemp -d)" && \
-  OS="$(uname | tr '[:upper:]' '[:lower:]')" && \
-  ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" && \
-  KREW="krew-${OS}_${ARCH}" && \
-  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/${KREW}.tar.gz" && \
-  tar zxvf "${KREW}.tar.gz" && \
-  ./"${KREW}" install krew
+    OS="$(uname | tr '[:upper:]' '[:lower:]')" && \
+    ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" && \
+    KREW="krew-${OS}_${ARCH}" && \
+    curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/${KREW}.tar.gz" && \
+    tar zxvf "${KREW}.tar.gz" && \
+    ./"${KREW}" install krew
 
 # Add krew to PATH
 RUN cat >> /home/vscode/.bashrc <<EOF
@@ -29,6 +22,7 @@ export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
 # Enable shell completion for kubectl
 source <(kubectl completion bash)
 
+# Make kubectl completion work for the alias 'k'
 alias k="kubectl"
 complete -o default -F __start_kubectl k
 

@@ -13,7 +13,10 @@
 	},
 	"features": {
 		"ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
-		"ghcr.io/devcontainers-extra/features/kubectx-kubens:1": {}
+		"ghcr.io/devcontainers-extra/features/kubectx-kubens:1": {},
+		"ghcr.io/stuartleeks/dev-container-features/shell-history:0": {},
+		"ghcr.io/larsnieuwenhuizen/features/neovim:0": {},
+		"ghcr.io/devcontainers-extra/features/fzf:1": {}
 	},
 	"customizations": {
 		"vscode": {
@@ -31,13 +34,11 @@
 	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
 	"postCreateCommand": {
 		"Generate SSH Key": "ssh-keygen -N '' -t rsa -b 4096 -f /home/vscode/.ssh/id_rsa",
-		"Install Dependencies": "bundle install",
+		"Update Dependencies": "bundle install",
 		"Install Kubevirt krew plugin": "kubectl krew install virt"
 	},
 	"mounts": [
 		"source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind,consistency=cached",
-		// Keep the bash history in a volume so it persists across container restarts
-		"source=projectname-bashhistory,target=/commandhistory,type=volume"
 	]
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},

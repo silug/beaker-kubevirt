@@ -99,7 +99,6 @@ RSpec.describe Beaker::KubevirtHelper do
         allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
         allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
         allow(Kubeclient::Client).to receive(:new).and_return(clients[:k8s], clients[:kubevirt])
-        helper.send(:setup_clients)
       end
 
       it 'sets up the k8s client' do
@@ -181,31 +180,39 @@ RSpec.describe Beaker::KubevirtHelper do
 
   describe '#setup_auth_options' do
     let(:helper) { described_class.new(options) }
-    let(:context_config) do
-      {
-        'user' => {
-          'token' => 'test-token',
-          'client-certificate-data' => Base64.strict_encode64('fake-cert'),
-          'client-key-data' => Base64.strict_encode64('fake-key'),
-        },
-      }
+
+    context 'with token auth' do
+      let(:context_config) do
+        { 'user' => { 'token' => 'test-token' } }
+      end
+
+      it 'sets up bearer token auth' do
+        auth_options = helper.send(:setup_auth_options, context_config)
+        expect(auth_options[:bearer_token]).to eq('test-token')
+      end
     end
 
-    it 'sets up bearer token auth' do
-      auth_options = helper.send(:setup_auth_options, context_config)
-      expect(auth_options[:bearer_token]).to eq('test-token')
-    end
+    context 'with client certificate auth' do
+      let(:context_config) do
+        {
+          'user' => {
+            'client-certificate-data' => Base64.strict_encode64('fake-cert'),
+            'client-key-data' => Base64.strict_encode64('fake-key'),
+          },
+        }
+      end
 
-    it 'sets up client certificate auth' do
-      allow(helper).to receive(:write_temp_file).and_return('/tmp/cert', '/tmp/key')
-      auth_options = helper.send(:setup_auth_options, context_config)
-      expect(auth_options[:client_cert]).to eq('/tmp/cert')
-    end
+      it 'sets up client certificate auth' do
+        allow(helper).to receive(:write_temp_file).and_return('/tmp/cert', '/tmp/key')
+        auth_options = helper.send(:setup_auth_options, context_config)
+        expect(auth_options[:client_cert]).to eq('/tmp/cert')
+      end
 
-    it 'sets up client key auth' do
-      allow(helper).to receive(:write_temp_file).and_return('/tmp/cert', '/tmp/key')
-      auth_options = helper.send(:setup_auth_options, context_config)
-      expect(auth_options[:client_key]).to eq('/tmp/key')
+      it 'sets up client key auth' do
+        allow(helper).to receive(:write_temp_file).and_return('/tmp/cert', '/tmp/key')
+        auth_options = helper.send(:setup_auth_options, context_config)
+        expect(auth_options[:client_key]).to eq('/tmp/key')
+      end
     end
   end
 
@@ -216,23 +223,29 @@ RSpec.describe Beaker::KubevirtHelper do
         kubevirt: instance_double(Kubeclient::Client),
       }
     end
-    let(:helper) { described_class.new(options) }
+    let(:options_without_clients) do
+      {
+        logger: instance_double(Logger).as_null_object,
+        kubeconfig: '/tmp/test-kubeconfig',
+        namespace: 'test-namespace',
+      }
+    end
+    let(:kubevirt_helper) { described_class.new(options_without_clients) }
 
     before do
       allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
       allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
       allow(Kubeclient::Config).to receive(:read).and_raise(RuntimeError, 'Unknown kubeconfig version')
       allow(Kubeclient::Client).to receive(:new).and_return(clients[:k8s], clients[:kubevirt])
-      allow(helper).to receive(:write_temp_file).and_return('/tmp/ca-cert')
-      helper.send(:setup_clients)
+      allow(kubevirt_helper).to receive(:write_temp_file).and_return('/tmp/ca-cert')
     end
 
     it 'sets up the k8s client' do
-      expect(helper.k8s_client).to be(clients[:k8s])
+      expect(kubevirt_helper.k8s_client).to be(clients[:k8s])
     end
 
     it 'sets up the kubevirt client' do
-      expect(helper.kubevirt_client).to be(clients[:kubevirt])
+      expect(kubevirt_helper.kubevirt_client).to be(clients[:kubevirt])
     end
   end
 end
