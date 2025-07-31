@@ -542,7 +542,7 @@ module Beaker
 
       case network_mode
       when 'port-forward'
-        setup_port_forward(host)
+        setup_port_forward(host, 22)
       when 'nodeport'
         setup_nodeport(host)
       when 'multus'
@@ -555,14 +555,14 @@ module Beaker
     ##
     # Setup port-forward networking
     # @param [Host] host The host
-    def setup_port_forward(host)
+    def setup_port_forward(host, host_port)
       require 'beaker/hypervisor/port_forward'
       vm_name = host['vm_name']
 
       local_port = find_free_port
 
       host['ip'] = '127.0.0.1' # Port forwarding will use localhost
-      host['port'] = local_port # Default SSH port
+      host['port'] = host_port # Default SSH port
       host['ssh'] ||= {}
       host['ssh']['port'] = local_port
 
