@@ -53,6 +53,7 @@ module Beaker
     # @option options [String] :cpu CPU resources for VM
     # @option options [String] :memory Memory resources for VM
     # @option options [Integer] :timeout Timeout for operations
+    # @option options [Boolean] :disable_virtio Disable virtio devices (for compatibility with Windows)
     def initialize(kubevirt_hosts, options)
       require 'beaker/hypervisor/kubevirt_helper'
 
@@ -123,14 +124,6 @@ module Beaker
       @kubevirt_helper.cleanup_secrets(@test_group_identifier)
       # Cleanup services associated with the test group
       @kubevirt_helper.cleanup_services(@test_group_identifier)
-
-      # @hosts.each do |host|
-      #   next unless host['vm_name']
-
-      #   @kubevirt_helper.delete_vm(host['vm_name'])
-      #   host_name = host.respond_to?(:name) ? host.name : host['name']
-      #   @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
-      # end
     end
 
     private
@@ -271,6 +264,54 @@ module Beaker
       }
     end
 
+    def disk_bus(host)
+      # Determine the disk bus type based on host configuration
+      if host['disable_virtio']
+        'sata'
+      else
+        'virtio'
+      end
+    end
+
+    def eth_model(host)
+      # Determine the network model based on host configuration
+      if host['disable_virtio']
+        'e1000'
+      else
+        'virtio'
+      end
+    end
+
+    ##
+    # Generate the hardware devices specification for the VM
+    # @param [Host] host The host configuration
+    # @return [Hash] Hardware devices specification
+    def generate_hardware_spec(host)
+      {
+        'disks' => [
+          {
+            'name' => 'rootdisk',
+            'disk' => {
+              'bus' => disk_bus(host),
+            },
+          },
+          {
+            'name' => 'configdisk',
+            'disk' => {
+              'bus' => disk_bus(host),
+            },
+          },
+        ],
+        'interfaces' => [
+          {
+            'name' => 'default',
+            'bridge' => {},
+            'model' => eth_model(host),
+          },
+        ],
+      }
+    end
+
     ##
     # Generate VM specification for KubeVirt
     # @param [Host] host The host configuration
@@ -325,28 +366,24 @@ module Beaker
                     'memory' => '1Gi',
                   },
                 },
-                'devices' => {
-                  'disks' => [
-                    {
-                      'name' => 'rootdisk',
-                      'disk' => {
-                        'bus' => 'virtio',
-                      },
-                    },
-                    {
-                      'name' => 'cloudinitdisk',
-                      'disk' => {
-                        'bus' => 'virtio',
-                      },
-                    },
-                  ],
-                  'interfaces' => [
-                    {
-                      'name' => 'default',
-                      'bridge' => {},
-                      'model' => 'virtio',
-                    },
-                  ],
+                'devices' => generate_hardware_spec(host),
+                'features' => {
+                  'acpi' => {},
+                  # Enable SMM (System Management Mode) for secure boot
+                  'smm' => {
+                    'enabled' => true,
+                  },
+                },
+                # Set to UEFI boot
+                'firmware' => {
+                  'bootloader' => {
+                    'efi' => {},
+                  },
+                },
+                'input' => {
+                  'bus' => 'usb',
+                  'type' => 'tablet',
+                  'name' => 'tablet',
                 },
               },
               'hostname' => host_name,
@@ -354,7 +391,7 @@ module Beaker
               'volumes' => [
                 generate_root_volume_spec(vm_image, host),
                 {
-                  'name' => 'cloudinitdisk',
+                  'name' => 'configdisk',
                   'cloudInitNoCloud' => {
                     'networkDataSecretRef' => {
                       'name' => cloud_init_secret,
