@@ -52,6 +52,7 @@ module Beaker
     # @option options [String] :ssh_key SSH public key to inject
     # @option options [String] :cpu CPU resources for VM
     # @option options [String] :memory Memory resources for VM
+    # @option options [Integer] :vm_ssh_port Port that SSH runs on inside the VM (default: 22)
     # @option options [Integer] :timeout Timeout for operations
     # @option options [Boolean] :disable_virtio Disable virtio devices (for compatibility with Windows)
     def initialize(kubevirt_hosts, options)
@@ -141,6 +142,11 @@ module Beaker
         base_name = vm_image.split('/').last
         # Create a unique datavolume name by including the VM name in it
         host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{base_name}-dv")
+      elsif vm_image && !vm_image.start_with?('docker://', 'oci://')
+        # For PVC sources, we also need to clone to avoid sharing the same disk
+        source_pvc = vm_image.sub(%r{^pvc://}, '')
+        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc}")
+        host['source_pvc'] = source_pvc
       end
 
       cloud_init_data = generate_cloud_init(host)
@@ -296,9 +302,9 @@ module Beaker
             },
           },
           {
-            'name' => 'configdisk',
+            'name' => 'cidata',
             'disk' => {
-              'bus' => disk_bus(host),
+              'bus' => 'sata',
             },
           },
         ],
@@ -380,7 +386,7 @@ module Beaker
                     'efi' => {},
                   },
                 },
-                'input' => {
+                'inputs' => {
                   'bus' => 'usb',
                   'type' => 'tablet',
                   'name' => 'tablet',
@@ -391,7 +397,7 @@ module Beaker
               'volumes' => [
                 generate_root_volume_spec(vm_image, host),
                 {
-                  'name' => 'configdisk',
+                  'name' => 'cidata',
                   'cloudInitNoCloud' => {
                     'networkDataSecretRef' => {
                       'name' => cloud_init_secret,
@@ -439,34 +445,57 @@ module Beaker
     # @param [Host] host The host configuration
     # @return [Array] DataVolumeTemplate specifications
     def generate_root_volume_dvtemplate(vm_image, host)
-      return nil unless vm_image.start_with?('http://', 'https://')
-
       # Use the dv_name from the current host, not the last one in the array
       dv_name = host['dv_name']
+      return nil unless dv_name
 
-      [
-        {
-          'metadata' => {
-            'name' => dv_name,
-            'labels' => get_labels(host),
-          },
-          'spec' => {
-            'storage' => {
-              'accessModes' => ['ReadWriteOnce'], # NOTE: This keeps the VM from being live migrated
-              'resources' => {
-                'requests' => {
-                  'storage' => host['disk_size'].to_s || '10Gi', # Default size, can be overridden
-                },
-              },
-            },
-            'source' => {
-              'http' => {
-                'url' => vm_image,
-              },
-            },
+      dv_spec = {
+        'metadata' => {
+          'name' => dv_name,
+          'labels' => get_labels(host),
+        },
+        'spec' => {
+          'storage' => {
+            'accessModes' => ['ReadWriteOnce'], # NOTE: This keeps the VM from being live migrated
           },
         },
-      ]
+      }
+
+      # Add storage size only if explicitly set or required (HTTP sources need it)
+      if host['disk_size']
+        dv_spec['spec']['storage']['resources'] = {
+          'requests' => {
+            'storage' => host['disk_size'].to_s,
+          },
+        }
+      elsif vm_image.start_with?('http://', 'https://')
+        # HTTP sources require a size since there's no source to infer from
+        dv_spec['spec']['storage']['resources'] = {
+          'requests' => {
+            'storage' => '10Gi', # Default size for HTTP sources
+          },
+        }
+      end
+      # For PVC clones without explicit size, omit storage.resources to inherit from source
+
+      # Set the appropriate source based on image type
+      if vm_image.start_with?('http://', 'https://')
+        dv_spec['spec']['source'] = {
+          'http' => {
+            'url' => vm_image,
+          },
+        }
+      elsif host['source_pvc']
+        # Clone from source PVC
+        dv_spec['spec']['source'] = {
+          'pvc' => {
+            'namespace' => @namespace,
+            'name' => host['source_pvc'],
+          },
+        }
+      end
+
+      [dv_spec]
     end
 
     ##
@@ -475,15 +504,12 @@ module Beaker
     # @param [Host] host The host configuration
     # @return [Hash] Volume specification
     def generate_root_volume_spec(vm_image, host)
-      if vm_image.start_with?('http://', 'https://')
-        # DataVolume URL
-        # Use the dv_name from the current host, not the last one in the array
-        dv_name = host['dv_name']
-
+      if host['dv_name']
+        # Use DataVolume (for HTTP URLs or PVC clones)
         {
           'name' => 'rootdisk',
           'dataVolume' => {
-            'name' => dv_name,
+            'name' => host['dv_name'],
           },
         }
       elsif vm_image.start_with?('docker://', 'oci://')
@@ -497,7 +523,7 @@ module Beaker
           },
         }
       else
-        # Assume it's a PVC namez
+        # Fallback: directly reference PVC (not recommended, kept for compatibility)
         vm_image = vm_image.sub(%r{^pvc://}, '') if vm_image.start_with?('pvc://')
         {
           'name' => 'rootdisk',
@@ -539,10 +565,12 @@ module Beaker
     # @param [Host] host The host to setup networking for
     def setup_networking(host)
       network_mode = host['network_mode'] || 'port-forward'
+      # Allow the VM SSH port to be configured per-host or use default
+      vm_ssh_port = host['vm_ssh_port'] || @options[:vm_ssh_port] || 22
 
       case network_mode
       when 'port-forward'
-        setup_port_forward(host, 22)
+        setup_port_forward(host, vm_ssh_port)
       when 'nodeport'
         setup_nodeport(host)
       when 'multus'
@@ -555,21 +583,29 @@ module Beaker
     ##
     # Setup port-forward networking
     # @param [Host] host The host
+    # @param [Integer] host_port The port on the VM to forward to (typically 22 for SSH)
     def setup_port_forward(host, host_port)
       require 'beaker/hypervisor/port_forward'
       vm_name = host['vm_name']
 
+      @options['ssh']['port'] = nil
       local_port = find_free_port
 
+      @logger.info("Using local port #{local_port} for port-forward to VM #{vm_name}")
+
       host['ip'] = '127.0.0.1' # Port forwarding will use localhost
-      host['port'] = host_port # Default SSH port
-      host['ssh'] ||= {}
-      host['ssh']['port'] = local_port
+      host['port'] = nil # Port that clients should connect to (local port)
+      # Get current SSH options and modify them
+      ssh_options = host['ssh'] || {}
+      ssh_options['port'] = local_port
+      ssh_options[:port] = local_port # Also set as a symbol key in case Beaker expects it that way
+      host['ssh'] = ssh_options
 
-      @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
+      @logger.debug("Setting up port-forward for VM #{vm_name} from localhost:#{local_port} to VM port #{host_port}")
+      @logger.info("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}, host['ssh'][:port]=#{host['ssh'][:port]}")
 
-      # TODO: This is a placeholder for the actual port on the VM
-      host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+      # Setup port forwarding from local_port to host_port (22) on the VM
+      host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, host_port, local_port)
 
       @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
     end
@@ -589,8 +625,10 @@ module Beaker
 
       host['ip'] = node_ip
       host['port'] = node_port
-      host['ssh'] ||= {}
-      host['ssh']['port'] = node_port
+      # Get current SSH options and modify them
+      ssh_options = host['ssh'] || {}
+      ssh_options['port'] = node_port
+      host['ssh'] = ssh_options
       host['service_name'] = service_name
     end
 
@@ -606,8 +644,10 @@ module Beaker
 
       host['ip'] = external_ip
       host['port'] = 22
-      host['ssh'] ||= {}
-      host['ssh']['port'] = 22
+      # Get current SSH options and modify them
+      ssh_options = host['ssh'] || {}
+      ssh_options['port'] = 22
+      host['ssh'] = ssh_options
     end
 
     ##
@@ -640,31 +680,6 @@ module Beaker
       port = server.addr[1]
       server.close
       port
-    end
-
-    ##
-    # Wait for SSH to become available
-    # @param [Host] host The host to check SSH for
-    def wait_for_ssh(host)
-      @logger.debug("Waiting for SSH to be available on #{host['ip']}:#{host['port']}")
-
-      timeout = SSH_TIMEOUT
-      start_time = Time.now
-
-      loop do
-        begin
-          sock = TCPSocket.new(host['ip'], host['port'])
-          sock.close
-          @logger.debug("SSH is available on #{host['ip']}:#{host['port']}")
-          break
-        rescue Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ETIMEDOUT
-          # SSH not ready yet
-        end
-
-        raise "Timeout waiting for SSH on #{host['ip']}:#{host['port']}" if Time.now - start_time > timeout
-
-        sleep 2
-      end
     end
 
     ##
