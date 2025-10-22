@@ -213,7 +213,7 @@ module Beaker
         'hostname' => host_name,
       }
 
-      if /windows/.match?(host['platform']&.downcase)
+      if host[:platform].include?('windows')
         cloud_init['users'] = [
           {
             'name' => username,
