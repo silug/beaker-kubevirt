@@ -248,14 +248,14 @@ RSpec.describe Beaker::Kubevirt do
 
     it 'includes cloud-init configuration' do
       volumes = vm_spec.dig('spec', 'template', 'spec', 'volumes')
-      cloud_init_volume = volumes.find { |v| v['name'] == 'cloudinitdisk' }
+      cloud_init_volume = volumes.find { |v| v['name'] == 'cidata' }
 
       expect(cloud_init_volume).not_to be_nil
     end
 
     it 'references the cloud-init secret' do
       volumes = vm_spec.dig('spec', 'template', 'spec', 'volumes')
-      cloud_init_volume = volumes.find { |v| v['name'] == 'cloudinitdisk' }
+      cloud_init_volume = volumes.find { |v| v['name'] == 'cidata' }
       expect(cloud_init_volume.dig('cloudInitNoCloud', 'secretRef', 'name')).to eq(vm_spec_args[:cloud_init_data])
     end
   end

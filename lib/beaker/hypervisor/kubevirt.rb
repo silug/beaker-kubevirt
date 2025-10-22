@@ -180,7 +180,7 @@ module Beaker
         },
         'type' => 'Opaque',
         'data' => {
-          'userdata' => Base64.strict_encode64(cloud_init_data),
+          'userData' => Base64.strict_encode64(cloud_init_data),
         },
       }
 
@@ -210,21 +210,31 @@ module Beaker
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
       cloud_init = {
-        'users' => [
+        'hostname' => host_name,
+      }
+
+      if /windows/.match?(host['platform']&.downcase)
+        cloud_init['users'] = [
+          {
+            'name' => username,
+            'primary_group' => 'Administrators',
+            'ssh_authorized_keys' => [ssh_key],
+            'shell' => 'powershell.exe',
+          },
+        ]
+      else
+        cloud_init['users'] = [
           {
             'name' => username,
             'sudo' => 'ALL=(ALL) NOPASSWD:ALL',
             'ssh_authorized_keys' => [ssh_key],
             'shell' => '/bin/bash',
           },
-        ],
-        'hostname' => host_name,
-        'ssh_pwauth' => false,
-        'disable_root' => false,
-        'chpasswd' => {
-          'expire' => false,
-        },
-      }
+        ]
+        cloud_init['ssh_pwauth'] = false
+        cloud_init['disable_root'] = false
+        cloud_init['chpasswd'] = { 'expire' => false }
+      end
 
       # Add custom cloud-init if provided
       if @options[:cloud_init]
@@ -399,9 +409,6 @@ module Beaker
                 {
                   'name' => 'cidata',
                   'cloudInitNoCloud' => {
-                    'networkDataSecretRef' => {
-                      'name' => cloud_init_secret,
-                    },
                     'secretRef' => {
                       'name' => cloud_init_secret,
                     },
