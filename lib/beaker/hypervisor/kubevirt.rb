@@ -249,28 +249,51 @@ module Beaker
     end
 
     ##
-    # Find SSH public key
-    # @return [String] SSH public key content
-    def find_ssh_public_key
+    # Find SSH key pair (public and private keys)
+    # @return [Hash] Hash with :public_key (content) and :private_key_path
+    def find_ssh_key_pair
       if @options[:ssh_key]
+        # If ssh_key is specified, it could be a public key path/content
         if File.exist?(@options[:ssh_key])
-          File.read(@options[:ssh_key]).strip
+          pub_key_path = @options[:ssh_key]
+          pub_key_content = File.read(pub_key_path).strip
+
+          # Try to find matching private key
+          # Remove .pub extension if present to get private key path
+          private_key_path = pub_key_path.sub(/\.pub$/, '')
+
+          raise "Private key not found at #{private_key_path} (matching public key #{pub_key_path})" unless File.exist?(private_key_path)
+
+          { public_key: pub_key_content, private_key_path: private_key_path }
         else
-          @options[:ssh_key].strip
+          # It's the public key content directly
+          # In this case, we can't determine the private key, so use default
+          @logger.warn('SSH public key provided as content, cannot determine private key path. Using default.')
+          { public_key: @options[:ssh_key].strip, private_key_path: nil }
         end
       else
-        # Try common locations
-        default_key_paths = [
-          File.join(Dir.home, '.ssh', 'id_rsa.pub'),
-          File.join(Dir.home, '.ssh', 'id_ed25519.pub'),
-          File.join(Dir.home, '.ssh', 'id_ecdsa.pub'),
-        ]
+        # Try common key types in order of preference
+        key_names = %w[id_ed25519 id_ecdsa id_rsa]
 
-        key_path = default_key_paths.find { |path| File.exist?(path) }
-        raise 'No SSH public key found. Specify with :ssh_key option.' unless key_path
+        key_names.each do |key_name|
+          private_key_path = File.join(Dir.home, '.ssh', key_name)
+          pub_key_path = "#{private_key_path}.pub"
 
-        File.read(key_path).strip
+          # Check if both private and public keys exist
+          if File.exist?(private_key_path) && File.exist?(pub_key_path)
+            pub_key_content = File.read(pub_key_path).strip
+            return { public_key: pub_key_content, private_key_path: private_key_path }
+          end
+        end
+
+        raise 'No matching SSH key pair found in ~/.ssh/. Specify with :ssh_key option.'
       end
+    end
+
+    # Find SSH public key (for backward compatibility)
+    # @return [String] SSH public key content
+    def find_ssh_public_key
+      find_ssh_key_pair[:public_key]
     end
 
     def get_labels(host)
@@ -325,6 +348,11 @@ module Beaker
             'model' => eth_model(host),
           },
         ],
+        'inputs' => [{
+          'bus' => 'usb',
+          'type' => 'tablet',
+          'name' => 'tablet',
+        }],
       }
     end
 
@@ -395,11 +423,6 @@ module Beaker
                   'bootloader' => {
                     'efi' => {},
                   },
-                },
-                'inputs' => {
-                  'bus' => 'usb',
-                  'type' => 'tablet',
-                  'name' => 'tablet',
                 },
               },
               'hostname' => host_name,
@@ -585,6 +608,10 @@ module Beaker
       else
         raise "Unsupported network mode: #{network_mode}"
       end
+
+      # Configure SSH keys - ensure we use the matching private key for the public key
+      # that was injected into the VM via cloud-init
+      configure_ssh_keys(host)
     end
 
     ##
@@ -605,7 +632,6 @@ module Beaker
       # Get current SSH options and modify them
       ssh_options = host['ssh'] || {}
       ssh_options['port'] = local_port
-      ssh_options[:port] = local_port # Also set as a symbol key in case Beaker expects it that way
       host['ssh'] = ssh_options
 
       @logger.debug("Setting up port-forward for VM #{vm_name} from localhost:#{local_port} to VM port #{host_port}")
@@ -655,6 +681,27 @@ module Beaker
       ssh_options = host['ssh'] || {}
       ssh_options['port'] = 22
       host['ssh'] = ssh_options
+    end
+
+    ##
+    # Configure SSH keys for the host
+    # Ensures the private key used for SSH matches the public key injected via cloud-init
+    # @param [Host] host The host to configure
+    def configure_ssh_keys(host)
+      key_pair = find_ssh_key_pair
+
+      # Only set the private key path if we found a matching pair
+      if key_pair[:private_key_path]
+        # Get the ssh options, modify them, and set them back
+        ssh_options = host['ssh'] || {}
+        # Set the keys array to use the matching private key
+        ssh_options['keys'] = [key_pair[:private_key_path]]
+        host['ssh'] = ssh_options
+
+        @logger.info("Configured SSH to use private key: #{key_pair[:private_key_path]}")
+      else
+        @logger.warn('Could not determine private key path, SSH will use default keys')
+      end
     end
 
     ##

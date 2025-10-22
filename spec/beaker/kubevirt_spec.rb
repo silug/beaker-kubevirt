@@ -316,7 +316,7 @@ RSpec.describe Beaker::Kubevirt do
       end
 
       it 'raises an error' do
-        expect { hypervisor.send(:find_ssh_public_key) }.to raise_error(RuntimeError, /No SSH public key found/)
+        expect { hypervisor.send(:find_ssh_public_key) }.to raise_error(RuntimeError, /No matching SSH key pair found/)
       end
     end
 
@@ -325,13 +325,124 @@ RSpec.describe Beaker::Kubevirt do
 
       before do
         allow(File).to receive(:exist?).and_return(false)
+        ecdsa_private_key_path = File.join(Dir.home, '.ssh', 'id_ecdsa')
         ecdsa_key_path = File.join(Dir.home, '.ssh', 'id_ecdsa.pub')
+        allow(File).to receive(:exist?).with(ecdsa_private_key_path).and_return(true)
         allow(File).to receive(:exist?).with(ecdsa_key_path).and_return(true)
         allow(File).to receive(:read).with(ecdsa_key_path).and_return('ssh-ed25519 test-key')
       end
 
       it 'returns the id_ecdsa key' do
         expect(hypervisor.send(:find_ssh_public_key)).to eq('ssh-ed25519 test-key')
+      end
+    end
+  end
+
+  describe '#find_ssh_key_pair' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    context 'when ssh_key is provided as a file path' do
+      let(:options) do
+        super().merge(ssh_key: '/home/user/.ssh/id_test.pub')
+      end
+
+      it 'returns the public key content and matching private key path' do
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test.pub').and_return(true)
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test').and_return(true)
+        allow(File).to receive(:read).with('/home/user/.ssh/id_test.pub').and_return('ssh-rsa test-key')
+
+        result = hypervisor.send(:find_ssh_key_pair)
+        expect(result[:public_key]).to eq('ssh-rsa test-key')
+        expect(result[:private_key_path]).to eq('/home/user/.ssh/id_test')
+      end
+
+      it 'raises an error when private key does not exist' do
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test.pub').and_return(true)
+        allow(File).to receive(:read).with('/home/user/.ssh/id_test.pub').and_return('ssh-rsa test-key')
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test').and_return(false)
+
+        expect { hypervisor.send(:find_ssh_key_pair) }.to raise_error(/Private key not found/)
+      end
+    end
+
+    context 'when ssh_key is provided as content' do
+      let(:options) do
+        super().merge(ssh_key: 'ssh-rsa direct-content')
+      end
+
+      it 'returns the public key content with nil private key path' do
+        allow(File).to receive(:exist?).with('ssh-rsa direct-content').and_return(false)
+
+        result = hypervisor.send(:find_ssh_key_pair)
+        expect(result[:public_key]).to eq('ssh-rsa direct-content')
+        expect(result[:private_key_path]).to be_nil
+      end
+    end
+
+    context 'when searching for default keys' do
+      let(:options) { super().dup.tap { |opts| opts.delete(:ssh_key) } }
+
+      it 'finds matching ed25519 key pair' do
+        allow(File).to receive(:exist?).and_return(false)
+        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_ed25519')).and_return(true)
+        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_ed25519.pub')).and_return(true)
+        allow(File).to receive(:read).with(File.join(Dir.home, '.ssh', 'id_ed25519.pub')).and_return('ssh-ed25519 test-key')
+
+        result = hypervisor.send(:find_ssh_key_pair)
+        expect(result[:public_key]).to eq('ssh-ed25519 test-key')
+        expect(result[:private_key_path]).to eq(File.join(Dir.home, '.ssh', 'id_ed25519'))
+      end
+
+      it 'finds matching rsa key pair when ed25519 not available' do
+        allow(File).to receive(:exist?).and_return(false)
+        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_rsa')).and_return(true)
+        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_rsa.pub')).and_return(true)
+        allow(File).to receive(:read).with(File.join(Dir.home, '.ssh', 'id_rsa.pub')).and_return('ssh-rsa test-key')
+
+        result = hypervisor.send(:find_ssh_key_pair)
+        expect(result[:public_key]).to eq('ssh-rsa test-key')
+        expect(result[:private_key_path]).to eq(File.join(Dir.home, '.ssh', 'id_rsa'))
+      end
+
+      it 'raises an error when no matching key pairs found' do
+        allow(File).to receive(:exist?).and_return(false)
+
+        expect { hypervisor.send(:find_ssh_key_pair) }.to raise_error(/No matching SSH key pair found/)
+      end
+    end
+  end
+
+  describe '#configure_ssh_keys' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+    let(:host) { hosts[0] }
+
+    before do
+      host['ssh'] = {}
+    end
+
+    context 'when private key path is available' do
+      it 'configures the host ssh keys array' do
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(
+          public_key: 'ssh-rsa test-key',
+          private_key_path: '/home/user/.ssh/id_rsa',
+        )
+
+        hypervisor.send(:configure_ssh_keys, host)
+
+        expect(host['ssh']['keys']).to eq(['/home/user/.ssh/id_rsa'])
+      end
+    end
+
+    context 'when private key path is not available' do
+      it 'does not set the keys array' do
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(
+          public_key: 'ssh-rsa test-key',
+          private_key_path: nil,
+        )
+
+        hypervisor.send(:configure_ssh_keys, host)
+
+        expect(host['ssh']['keys']).to be_nil
       end
     end
   end
