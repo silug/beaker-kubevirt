@@ -346,14 +346,15 @@ RSpec.describe Beaker::Kubevirt do
         super().merge(ssh_key: '/home/user/.ssh/id_test.pub')
       end
 
-      it 'returns the public key content and matching private key path' do
+      it 'returns the public key content and matching private key path' do # rubocop:disable RSpec/ExampleLength
         allow(File).to receive(:exist?).with('/home/user/.ssh/id_test.pub').and_return(true)
         allow(File).to receive(:exist?).with('/home/user/.ssh/id_test').and_return(true)
         allow(File).to receive(:read).with('/home/user/.ssh/id_test.pub').and_return('ssh-rsa test-key')
-
         result = hypervisor.send(:find_ssh_key_pair)
-        expect(result[:public_key]).to eq('ssh-rsa test-key')
-        expect(result[:private_key_path]).to eq('/home/user/.ssh/id_test')
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-rsa test-key')
+          expect(result[:private_key_path]).to eq('/home/user/.ssh/id_test')
+        end
       end
 
       it 'raises an error when private key does not exist' do
@@ -370,38 +371,43 @@ RSpec.describe Beaker::Kubevirt do
         super().merge(ssh_key: 'ssh-rsa direct-content')
       end
 
-      it 'returns the public key content with nil private key path' do
+      it 'returns the public key content with nil private key path' do # rubocop:disable RSpec/ExampleLength
         allow(File).to receive(:exist?).with('ssh-rsa direct-content').and_return(false)
-
         result = hypervisor.send(:find_ssh_key_pair)
-        expect(result[:public_key]).to eq('ssh-rsa direct-content')
-        expect(result[:private_key_path]).to be_nil
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-rsa direct-content')
+          expect(result[:private_key_path]).to be_nil
+        end
       end
     end
 
     context 'when searching for default keys' do
       let(:options) { super().dup.tap { |opts| opts.delete(:ssh_key) } }
 
-      it 'finds matching ed25519 key pair' do
+      it 'finds matching ed25519 key pair' do # rubocop:disable RSpec/ExampleLength
+        ed25519_path = File.join(Dir.home, '.ssh', 'id_ed25519')
         allow(File).to receive(:exist?).and_return(false)
-        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_ed25519')).and_return(true)
-        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_ed25519.pub')).and_return(true)
-        allow(File).to receive(:read).with(File.join(Dir.home, '.ssh', 'id_ed25519.pub')).and_return('ssh-ed25519 test-key')
-
+        allow(File).to receive(:exist?).with(ed25519_path).and_return(true)
+        allow(File).to receive(:exist?).with("#{ed25519_path}.pub").and_return(true)
+        allow(File).to receive(:read).with("#{ed25519_path}.pub").and_return('ssh-ed25519 test-key')
         result = hypervisor.send(:find_ssh_key_pair)
-        expect(result[:public_key]).to eq('ssh-ed25519 test-key')
-        expect(result[:private_key_path]).to eq(File.join(Dir.home, '.ssh', 'id_ed25519'))
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-ed25519 test-key')
+          expect(result[:private_key_path]).to eq(ed25519_path)
+        end
       end
 
-      it 'finds matching rsa key pair when ed25519 not available' do
+      it 'finds matching rsa key pair when ed25519 not available' do # rubocop:disable RSpec/ExampleLength
+        rsa_path = File.join(Dir.home, '.ssh', 'id_rsa')
         allow(File).to receive(:exist?).and_return(false)
-        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_rsa')).and_return(true)
-        allow(File).to receive(:exist?).with(File.join(Dir.home, '.ssh', 'id_rsa.pub')).and_return(true)
-        allow(File).to receive(:read).with(File.join(Dir.home, '.ssh', 'id_rsa.pub')).and_return('ssh-rsa test-key')
-
+        allow(File).to receive(:exist?).with(rsa_path).and_return(true)
+        allow(File).to receive(:exist?).with("#{rsa_path}.pub").and_return(true)
+        allow(File).to receive(:read).with("#{rsa_path}.pub").and_return('ssh-rsa test-key')
         result = hypervisor.send(:find_ssh_key_pair)
-        expect(result[:public_key]).to eq('ssh-rsa test-key')
-        expect(result[:private_key_path]).to eq(File.join(Dir.home, '.ssh', 'id_rsa'))
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-rsa test-key')
+          expect(result[:private_key_path]).to eq(rsa_path)
+        end
       end
 
       it 'raises an error when no matching key pairs found' do
@@ -422,26 +428,20 @@ RSpec.describe Beaker::Kubevirt do
 
     context 'when private key path is available' do
       it 'configures the host ssh keys array' do
-        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(
-          public_key: 'ssh-rsa test-key',
-          private_key_path: '/home/user/.ssh/id_rsa',
-        )
+        key_pair = { public_key: 'ssh-rsa test-key', private_key_path: '/home/user/.ssh/id_rsa' }
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(key_pair)
 
         hypervisor.send(:configure_ssh_keys, host)
-
         expect(host['ssh']['keys']).to eq(['/home/user/.ssh/id_rsa'])
       end
     end
 
     context 'when private key path is not available' do
       it 'does not set the keys array' do
-        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(
-          public_key: 'ssh-rsa test-key',
-          private_key_path: nil,
-        )
+        key_pair = { public_key: 'ssh-rsa test-key', private_key_path: nil }
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(key_pair)
 
         hypervisor.send(:configure_ssh_keys, host)
-
         expect(host['ssh']['keys']).to be_nil
       end
     end
