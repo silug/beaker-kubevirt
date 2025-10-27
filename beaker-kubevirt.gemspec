@@ -33,14 +33,13 @@ Gem::Specification.new do |spec|
   # Runtime dependencies
   spec.add_runtime_dependency 'base64', '~> 0.1'
   spec.add_runtime_dependency 'bcrypt_pbkdf', '~> 1.0'
-  spec.add_runtime_dependency 'beaker', '>= 7.0.0'
+  spec.add_runtime_dependency 'beaker', '~> 7.0', '>= 7.0.0'
   spec.add_runtime_dependency 'eventmachine', '~> 1.2'
   spec.add_runtime_dependency 'faye-websocket', '~> 0.12'
   spec.add_runtime_dependency 'kubeclient', '>= 4.9.3', '< 5.0.0'
   spec.add_runtime_dependency 'pstore', '~> 0.1'
 
   # Development dependencies
-  spec.add_development_dependency 'beaker', '>= 7.0.0'
   spec.add_development_dependency 'benchmark', '~> 0.1'
   spec.add_development_dependency 'pry', '~> 0.10'
   spec.add_development_dependency 'pry-byebug', '~> 3.4'
