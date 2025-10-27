@@ -264,7 +264,7 @@ RSpec.describe Beaker::Kubevirt do
     let(:cloud_init_args) do
       {
         hypervisor: described_class.new(hosts, options),
-        host: { 'name' => 'test-host', 'user' => 'testuser' },
+        host: { 'name' => 'test-host', 'user' => 'testuser', platform: 'debian-11-x86_64' },
       }
     end
     let(:cloud_init_data) { cloud_init_args[:hypervisor].send(:generate_cloud_init, cloud_init_args[:host]) }
