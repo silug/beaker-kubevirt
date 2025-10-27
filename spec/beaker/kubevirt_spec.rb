@@ -261,28 +261,106 @@ RSpec.describe Beaker::Kubevirt do
   end
 
   describe '#generate_cloud_init' do
-    let(:cloud_init_args) do
-      {
-        hypervisor: described_class.new(hosts, options),
-        host: { 'name' => 'test-host', 'user' => 'testuser', platform: 'debian-11-x86_64' },
-      }
-    end
-    let(:cloud_init_data) { cloud_init_args[:hypervisor].send(:generate_cloud_init, cloud_init_args[:host]) }
+    let(:hypervisor) { described_class.new(hosts, options) }
 
     before do
-      allow(cloud_init_args[:hypervisor]).to receive(:find_ssh_public_key).and_return('ssh-rsa test-key')
+      allow(hypervisor).to receive(:find_ssh_public_key).and_return('ssh-rsa test-key')
     end
 
-    it 'is a cloud-config' do
-      expect(cloud_init_data).to include('#cloud-config')
+    context 'when using Linux hosts' do
+      let(:host) { { 'name' => 'test-host', 'user' => 'testuser', platform: 'debian-11-x86_64' } }
+
+      it 'is a cloud-config' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('#cloud-config')
+      end
+
+      it 'includes the user' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('testuser')
+      end
+
+      it 'includes the ssh key' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('ssh-rsa test-key')
+      end
+
+      it 'includes sudo configuration' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('sudo: ALL=(ALL) NOPASSWD:ALL')
+      end
+
+      it 'includes bash shell' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('shell: "/bin/bash"')
+      end
+
+      it 'includes ssh_pwauth false' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('ssh_pwauth: false')
+      end
+
+      it 'includes disable_root false' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('disable_root: false')
+      end
+
+      it 'includes chpasswd configuration' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        aggregate_failures do
+          expect(cloud_init_data).to include('chpasswd:')
+          expect(cloud_init_data).to include('expire: false')
+        end
+      end
     end
 
-    it 'includes the user' do
-      expect(cloud_init_data).to include('testuser')
-    end
+    context 'when using Windows hosts' do
+      let(:host) { { 'name' => 'win-host', 'user' => 'winuser', platform: 'windows-2019-x86_64' } }
 
-    it 'includes the ssh key' do
-      expect(cloud_init_data).to include('ssh-rsa test-key')
+      it 'is a cloud-config' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('#cloud-config')
+      end
+
+      it 'includes the user' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('winuser')
+      end
+
+      it 'includes the ssh key' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('ssh-rsa test-key')
+      end
+
+      it 'includes primary_group Administrators' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('primary_group: Administrators')
+      end
+
+      it 'includes powershell shell' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('shell: powershell.exe')
+      end
+
+      it 'does not include sudo configuration' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('sudo:')
+      end
+
+      it 'does not include ssh_pwauth' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('ssh_pwauth:')
+      end
+
+      it 'does not include disable_root' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('disable_root:')
+      end
+
+      it 'does not include chpasswd' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('chpasswd:')
+      end
     end
   end
 
