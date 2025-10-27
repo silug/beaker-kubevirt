@@ -219,6 +219,10 @@ class KubeVirtPortForwarder
             connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting.positive?
           end
         end
+      rescue StandardError => e
+        err_msg = "Failed to establish WebSocket connection: #{e.class}: #{e.message}"
+        @logger.error(err_msg)
+        connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting.positive?
       end
 
       result = connection_status_q.pop

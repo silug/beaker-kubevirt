@@ -107,7 +107,7 @@ CONFIG:
 - **Error Handling**: Comprehensive error handling with meaningful messages
 - **Logging**: Detailed logging for debugging and monitoring
 - **Security**: Secure credential handling and SSH key management
-- **Compatibility**: Works with Ruby >= 2.7 and Beaker >= 4.0
+- **Compatibility**: Works with Ruby >= 3 and Beaker >= 7.0
 
 ## Usage Workflow
 

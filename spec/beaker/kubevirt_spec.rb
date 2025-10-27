@@ -248,41 +248,119 @@ RSpec.describe Beaker::Kubevirt do
 
     it 'includes cloud-init configuration' do
       volumes = vm_spec.dig('spec', 'template', 'spec', 'volumes')
-      cloud_init_volume = volumes.find { |v| v['name'] == 'cloudinitdisk' }
+      cloud_init_volume = volumes.find { |v| v['name'] == 'cidata' }
 
       expect(cloud_init_volume).not_to be_nil
     end
 
     it 'references the cloud-init secret' do
       volumes = vm_spec.dig('spec', 'template', 'spec', 'volumes')
-      cloud_init_volume = volumes.find { |v| v['name'] == 'cloudinitdisk' }
+      cloud_init_volume = volumes.find { |v| v['name'] == 'cidata' }
       expect(cloud_init_volume.dig('cloudInitNoCloud', 'secretRef', 'name')).to eq(vm_spec_args[:cloud_init_data])
     end
   end
 
   describe '#generate_cloud_init' do
-    let(:cloud_init_args) do
-      {
-        hypervisor: described_class.new(hosts, options),
-        host: { 'name' => 'test-host', 'user' => 'testuser' },
-      }
-    end
-    let(:cloud_init_data) { cloud_init_args[:hypervisor].send(:generate_cloud_init, cloud_init_args[:host]) }
+    let(:hypervisor) { described_class.new(hosts, options) }
 
     before do
-      allow(cloud_init_args[:hypervisor]).to receive(:find_ssh_public_key).and_return('ssh-rsa test-key')
+      allow(hypervisor).to receive(:find_ssh_public_key).and_return('ssh-rsa test-key')
     end
 
-    it 'is a cloud-config' do
-      expect(cloud_init_data).to include('#cloud-config')
+    context 'when using Linux hosts' do
+      let(:host) { { 'name' => 'test-host', 'user' => 'testuser', platform: 'debian-11-x86_64' } }
+
+      it 'is a cloud-config' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('#cloud-config')
+      end
+
+      it 'includes the user' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('testuser')
+      end
+
+      it 'includes the ssh key' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('ssh-rsa test-key')
+      end
+
+      it 'includes sudo configuration' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('sudo: ALL=(ALL) NOPASSWD:ALL')
+      end
+
+      it 'includes bash shell' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('shell: "/bin/bash"')
+      end
+
+      it 'includes ssh_pwauth false' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('ssh_pwauth: false')
+      end
+
+      it 'includes disable_root false' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('disable_root: false')
+      end
+
+      it 'includes chpasswd configuration' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        aggregate_failures do
+          expect(cloud_init_data).to include('chpasswd:')
+          expect(cloud_init_data).to include('expire: false')
+        end
+      end
     end
 
-    it 'includes the user' do
-      expect(cloud_init_data).to include('testuser')
-    end
+    context 'when using Windows hosts' do
+      let(:host) { { 'name' => 'win-host', 'user' => 'winuser', platform: 'windows-2019-x86_64' } }
 
-    it 'includes the ssh key' do
-      expect(cloud_init_data).to include('ssh-rsa test-key')
+      it 'is a cloud-config' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('#cloud-config')
+      end
+
+      it 'includes the user' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('winuser')
+      end
+
+      it 'includes the ssh key' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('ssh-rsa test-key')
+      end
+
+      it 'includes primary_group Administrators' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('primary_group: Administrators')
+      end
+
+      it 'includes powershell shell' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).to include('shell: powershell.exe')
+      end
+
+      it 'does not include sudo configuration' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('sudo:')
+      end
+
+      it 'does not include ssh_pwauth' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('ssh_pwauth:')
+      end
+
+      it 'does not include disable_root' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('disable_root:')
+      end
+
+      it 'does not include chpasswd' do
+        cloud_init_data = hypervisor.send(:generate_cloud_init, host)
+        expect(cloud_init_data).not_to include('chpasswd:')
+      end
     end
   end
 
@@ -316,7 +394,7 @@ RSpec.describe Beaker::Kubevirt do
       end
 
       it 'raises an error' do
-        expect { hypervisor.send(:find_ssh_public_key) }.to raise_error(RuntimeError, /No SSH public key found/)
+        expect { hypervisor.send(:find_ssh_public_key) }.to raise_error(RuntimeError, /No matching SSH key pair found/)
       end
     end
 
@@ -325,13 +403,124 @@ RSpec.describe Beaker::Kubevirt do
 
       before do
         allow(File).to receive(:exist?).and_return(false)
+        ecdsa_private_key_path = File.join(Dir.home, '.ssh', 'id_ecdsa')
         ecdsa_key_path = File.join(Dir.home, '.ssh', 'id_ecdsa.pub')
+        allow(File).to receive(:exist?).with(ecdsa_private_key_path).and_return(true)
         allow(File).to receive(:exist?).with(ecdsa_key_path).and_return(true)
         allow(File).to receive(:read).with(ecdsa_key_path).and_return('ssh-ed25519 test-key')
       end
 
       it 'returns the id_ecdsa key' do
         expect(hypervisor.send(:find_ssh_public_key)).to eq('ssh-ed25519 test-key')
+      end
+    end
+  end
+
+  describe '#find_ssh_key_pair' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    context 'when ssh_key is provided as a file path' do
+      let(:options) do
+        super().merge(ssh_key: '/home/user/.ssh/id_test.pub')
+      end
+
+      it 'returns the public key content and matching private key path' do # rubocop:disable RSpec/ExampleLength
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test.pub').and_return(true)
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test').and_return(true)
+        allow(File).to receive(:read).with('/home/user/.ssh/id_test.pub').and_return('ssh-rsa test-key')
+        result = hypervisor.send(:find_ssh_key_pair)
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-rsa test-key')
+          expect(result[:private_key_path]).to eq('/home/user/.ssh/id_test')
+        end
+      end
+
+      it 'raises an error when private key does not exist' do
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test.pub').and_return(true)
+        allow(File).to receive(:read).with('/home/user/.ssh/id_test.pub').and_return('ssh-rsa test-key')
+        allow(File).to receive(:exist?).with('/home/user/.ssh/id_test').and_return(false)
+
+        expect { hypervisor.send(:find_ssh_key_pair) }.to raise_error(/Private key not found/)
+      end
+    end
+
+    context 'when ssh_key is provided as content' do
+      let(:options) do
+        super().merge(ssh_key: 'ssh-rsa direct-content')
+      end
+
+      it 'returns the public key content with nil private key path' do # rubocop:disable RSpec/ExampleLength
+        allow(File).to receive(:exist?).with('ssh-rsa direct-content').and_return(false)
+        result = hypervisor.send(:find_ssh_key_pair)
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-rsa direct-content')
+          expect(result[:private_key_path]).to be_nil
+        end
+      end
+    end
+
+    context 'when searching for default keys' do
+      let(:options) { super().dup.tap { |opts| opts.delete(:ssh_key) } }
+
+      it 'finds matching ed25519 key pair' do # rubocop:disable RSpec/ExampleLength
+        ed25519_path = File.join(Dir.home, '.ssh', 'id_ed25519')
+        allow(File).to receive(:exist?).and_return(false)
+        allow(File).to receive(:exist?).with(ed25519_path).and_return(true)
+        allow(File).to receive(:exist?).with("#{ed25519_path}.pub").and_return(true)
+        allow(File).to receive(:read).with("#{ed25519_path}.pub").and_return('ssh-ed25519 test-key')
+        result = hypervisor.send(:find_ssh_key_pair)
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-ed25519 test-key')
+          expect(result[:private_key_path]).to eq(ed25519_path)
+        end
+      end
+
+      it 'finds matching rsa key pair when ed25519 not available' do # rubocop:disable RSpec/ExampleLength
+        rsa_path = File.join(Dir.home, '.ssh', 'id_rsa')
+        allow(File).to receive(:exist?).and_return(false)
+        allow(File).to receive(:exist?).with(rsa_path).and_return(true)
+        allow(File).to receive(:exist?).with("#{rsa_path}.pub").and_return(true)
+        allow(File).to receive(:read).with("#{rsa_path}.pub").and_return('ssh-rsa test-key')
+        result = hypervisor.send(:find_ssh_key_pair)
+        aggregate_failures do
+          expect(result[:public_key]).to eq('ssh-rsa test-key')
+          expect(result[:private_key_path]).to eq(rsa_path)
+        end
+      end
+
+      it 'raises an error when no matching key pairs found' do
+        allow(File).to receive(:exist?).and_return(false)
+
+        expect { hypervisor.send(:find_ssh_key_pair) }.to raise_error(/No matching SSH key pair found/)
+      end
+    end
+  end
+
+  describe '#configure_ssh_keys' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+    let(:host) { hosts[0] }
+
+    before do
+      host['ssh'] = {}
+    end
+
+    context 'when private key path is available' do
+      it 'configures the host ssh keys array' do
+        key_pair = { public_key: 'ssh-rsa test-key', private_key_path: '/home/user/.ssh/id_rsa' }
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(key_pair)
+
+        hypervisor.send(:configure_ssh_keys, host)
+        expect(host['ssh']['keys']).to eq(['/home/user/.ssh/id_rsa'])
+      end
+    end
+
+    context 'when private key path is not available' do
+      it 'does not set the keys array' do
+        key_pair = { public_key: 'ssh-rsa test-key', private_key_path: nil }
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(key_pair)
+
+        hypervisor.send(:configure_ssh_keys, host)
+        expect(host['ssh']['keys']).to be_nil
       end
     end
   end

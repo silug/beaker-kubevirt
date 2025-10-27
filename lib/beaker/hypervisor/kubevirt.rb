@@ -52,7 +52,9 @@ module Beaker
     # @option options [String] :ssh_key SSH public key to inject
     # @option options [String] :cpu CPU resources for VM
     # @option options [String] :memory Memory resources for VM
+    # @option options [Integer] :vm_ssh_port Port that SSH runs on inside the VM (default: 22)
     # @option options [Integer] :timeout Timeout for operations
+    # @option options [Boolean] :disable_virtio Disable virtio devices (for compatibility with Windows)
     def initialize(kubevirt_hosts, options)
       require 'beaker/hypervisor/kubevirt_helper'
 
@@ -123,14 +125,6 @@ module Beaker
       @kubevirt_helper.cleanup_secrets(@test_group_identifier)
       # Cleanup services associated with the test group
       @kubevirt_helper.cleanup_services(@test_group_identifier)
-
-      # @hosts.each do |host|
-      #   next unless host['vm_name']
-
-      #   @kubevirt_helper.delete_vm(host['vm_name'])
-      #   host_name = host.respond_to?(:name) ? host.name : host['name']
-      #   @logger.debug("Deleted KubeVirt VM #{host['vm_name']} for #{host_name}")
-      # end
     end
 
     private
@@ -148,6 +142,11 @@ module Beaker
         base_name = vm_image.split('/').last
         # Create a unique datavolume name by including the VM name in it
         host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{base_name}-dv")
+      elsif vm_image && !vm_image.start_with?('docker://', 'oci://')
+        # For PVC sources, we also need to clone to avoid sharing the same disk
+        source_pvc = vm_image.sub(%r{^pvc://}, '')
+        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc}")
+        host['source_pvc'] = source_pvc
       end
 
       cloud_init_data = generate_cloud_init(host)
@@ -181,7 +180,7 @@ module Beaker
         },
         'type' => 'Opaque',
         'data' => {
-          'userdata' => Base64.strict_encode64(cloud_init_data),
+          'userData' => Base64.strict_encode64(cloud_init_data),
         },
       }
 
@@ -211,21 +210,31 @@ module Beaker
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
       cloud_init = {
-        'users' => [
+        'hostname' => host_name,
+      }
+
+      if host[:platform].include?('windows')
+        cloud_init['users'] = [
+          {
+            'name' => username,
+            'primary_group' => 'Administrators',
+            'ssh_authorized_keys' => [ssh_key],
+            'shell' => 'powershell.exe',
+          },
+        ]
+      else
+        cloud_init['users'] = [
           {
             'name' => username,
             'sudo' => 'ALL=(ALL) NOPASSWD:ALL',
             'ssh_authorized_keys' => [ssh_key],
             'shell' => '/bin/bash',
           },
-        ],
-        'hostname' => host_name,
-        'ssh_pwauth' => false,
-        'disable_root' => false,
-        'chpasswd' => {
-          'expire' => false,
-        },
-      }
+        ]
+        cloud_init['ssh_pwauth'] = false
+        cloud_init['disable_root'] = false
+        cloud_init['chpasswd'] = { 'expire' => false }
+      end
 
       # Add custom cloud-init if provided
       if @options[:cloud_init]
@@ -240,34 +249,110 @@ module Beaker
     end
 
     ##
-    # Find SSH public key
-    # @return [String] SSH public key content
-    def find_ssh_public_key
+    # Find SSH key pair (public and private keys)
+    # @return [Hash] Hash with :public_key (content) and :private_key_path
+    def find_ssh_key_pair
       if @options[:ssh_key]
+        # If ssh_key is specified, it could be a public key path/content
         if File.exist?(@options[:ssh_key])
-          File.read(@options[:ssh_key]).strip
+          pub_key_path = @options[:ssh_key]
+          pub_key_content = File.read(pub_key_path).strip
+
+          # Try to find matching private key
+          # Remove .pub extension if present to get private key path
+          private_key_path = pub_key_path.sub(/\.pub$/, '')
+
+          raise "Private key not found at #{private_key_path} (matching public key #{pub_key_path})" unless File.exist?(private_key_path)
+
+          { public_key: pub_key_content, private_key_path: private_key_path }
         else
-          @options[:ssh_key].strip
+          # It's the public key content directly
+          # In this case, we can't determine the private key, so use default
+          @logger.warn('SSH public key provided as content, cannot determine private key path. Using default.')
+          { public_key: @options[:ssh_key].strip, private_key_path: nil }
         end
       else
-        # Try common locations
-        default_key_paths = [
-          File.join(Dir.home, '.ssh', 'id_rsa.pub'),
-          File.join(Dir.home, '.ssh', 'id_ed25519.pub'),
-          File.join(Dir.home, '.ssh', 'id_ecdsa.pub'),
-        ]
+        # Try common key types in order of preference
+        key_names = %w[id_ed25519 id_ecdsa id_rsa]
 
-        key_path = default_key_paths.find { |path| File.exist?(path) }
-        raise 'No SSH public key found. Specify with :ssh_key option.' unless key_path
+        key_names.each do |key_name|
+          private_key_path = File.join(Dir.home, '.ssh', key_name)
+          pub_key_path = "#{private_key_path}.pub"
 
-        File.read(key_path).strip
+          # Check if both private and public keys exist
+          if File.exist?(private_key_path) && File.exist?(pub_key_path)
+            pub_key_content = File.read(pub_key_path).strip
+            return { public_key: pub_key_content, private_key_path: private_key_path }
+          end
+        end
+
+        raise 'No matching SSH key pair found in ~/.ssh/. Specify with :ssh_key option.'
       end
+    end
+
+    # Find SSH public key (for backward compatibility)
+    # @return [String] SSH public key content
+    def find_ssh_public_key
+      find_ssh_key_pair[:public_key]
     end
 
     def get_labels(host)
       {
         'beaker/test-group' => @test_group_identifier,
         'beaker/host' => host.respond_to?(:name) ? host.name : host['name'],
+      }
+    end
+
+    def disk_bus(host)
+      # Determine the disk bus type based on host configuration
+      if host['disable_virtio']
+        'sata'
+      else
+        'virtio'
+      end
+    end
+
+    def eth_model(host)
+      # Determine the network model based on host configuration
+      if host['disable_virtio']
+        'e1000'
+      else
+        'virtio'
+      end
+    end
+
+    ##
+    # Generate the hardware devices specification for the VM
+    # @param [Host] host The host configuration
+    # @return [Hash] Hardware devices specification
+    def generate_hardware_spec(host)
+      {
+        'disks' => [
+          {
+            'name' => 'rootdisk',
+            'disk' => {
+              'bus' => disk_bus(host),
+            },
+          },
+          {
+            'name' => 'cidata',
+            'disk' => {
+              'bus' => 'sata',
+            },
+          },
+        ],
+        'interfaces' => [
+          {
+            'name' => 'default',
+            'bridge' => {},
+            'model' => eth_model(host),
+          },
+        ],
+        'inputs' => [{
+          'bus' => 'usb',
+          'type' => 'tablet',
+          'name' => 'tablet',
+        }],
       }
     end
 
@@ -325,28 +410,19 @@ module Beaker
                     'memory' => '1Gi',
                   },
                 },
-                'devices' => {
-                  'disks' => [
-                    {
-                      'name' => 'rootdisk',
-                      'disk' => {
-                        'bus' => 'virtio',
-                      },
-                    },
-                    {
-                      'name' => 'cloudinitdisk',
-                      'disk' => {
-                        'bus' => 'virtio',
-                      },
-                    },
-                  ],
-                  'interfaces' => [
-                    {
-                      'name' => 'default',
-                      'bridge' => {},
-                      'model' => 'virtio',
-                    },
-                  ],
+                'devices' => generate_hardware_spec(host),
+                'features' => {
+                  'acpi' => {},
+                  # Enable SMM (System Management Mode) for secure boot
+                  'smm' => {
+                    'enabled' => true,
+                  },
+                },
+                # Set to UEFI boot
+                'firmware' => {
+                  'bootloader' => {
+                    'efi' => {},
+                  },
                 },
               },
               'hostname' => host_name,
@@ -354,11 +430,8 @@ module Beaker
               'volumes' => [
                 generate_root_volume_spec(vm_image, host),
                 {
-                  'name' => 'cloudinitdisk',
+                  'name' => 'cidata',
                   'cloudInitNoCloud' => {
-                    'networkDataSecretRef' => {
-                      'name' => cloud_init_secret,
-                    },
                     'secretRef' => {
                       'name' => cloud_init_secret,
                     },
@@ -402,34 +475,57 @@ module Beaker
     # @param [Host] host The host configuration
     # @return [Array] DataVolumeTemplate specifications
     def generate_root_volume_dvtemplate(vm_image, host)
-      return nil unless vm_image.start_with?('http://', 'https://')
-
       # Use the dv_name from the current host, not the last one in the array
       dv_name = host['dv_name']
+      return nil unless dv_name
 
-      [
-        {
-          'metadata' => {
-            'name' => dv_name,
-            'labels' => get_labels(host),
-          },
-          'spec' => {
-            'storage' => {
-              'accessModes' => ['ReadWriteOnce'], # NOTE: This keeps the VM from being live migrated
-              'resources' => {
-                'requests' => {
-                  'storage' => host['disk_size'].to_s || '10Gi', # Default size, can be overridden
-                },
-              },
-            },
-            'source' => {
-              'http' => {
-                'url' => vm_image,
-              },
-            },
+      dv_spec = {
+        'metadata' => {
+          'name' => dv_name,
+          'labels' => get_labels(host),
+        },
+        'spec' => {
+          'storage' => {
+            'accessModes' => ['ReadWriteOnce'], # NOTE: This keeps the VM from being live migrated
           },
         },
-      ]
+      }
+
+      # Add storage size only if explicitly set or required (HTTP sources need it)
+      if host['disk_size']
+        dv_spec['spec']['storage']['resources'] = {
+          'requests' => {
+            'storage' => host['disk_size'].to_s,
+          },
+        }
+      elsif vm_image.start_with?('http://', 'https://')
+        # HTTP sources require a size since there's no source to infer from
+        dv_spec['spec']['storage']['resources'] = {
+          'requests' => {
+            'storage' => '10Gi', # Default size for HTTP sources
+          },
+        }
+      end
+      # For PVC clones without explicit size, omit storage.resources to inherit from source
+
+      # Set the appropriate source based on image type
+      if vm_image.start_with?('http://', 'https://')
+        dv_spec['spec']['source'] = {
+          'http' => {
+            'url' => vm_image,
+          },
+        }
+      elsif host['source_pvc']
+        # Clone from source PVC
+        dv_spec['spec']['source'] = {
+          'pvc' => {
+            'namespace' => @namespace,
+            'name' => host['source_pvc'],
+          },
+        }
+      end
+
+      [dv_spec]
     end
 
     ##
@@ -438,15 +534,12 @@ module Beaker
     # @param [Host] host The host configuration
     # @return [Hash] Volume specification
     def generate_root_volume_spec(vm_image, host)
-      if vm_image.start_with?('http://', 'https://')
-        # DataVolume URL
-        # Use the dv_name from the current host, not the last one in the array
-        dv_name = host['dv_name']
-
+      if host['dv_name']
+        # Use DataVolume (for HTTP URLs or PVC clones)
         {
           'name' => 'rootdisk',
           'dataVolume' => {
-            'name' => dv_name,
+            'name' => host['dv_name'],
           },
         }
       elsif vm_image.start_with?('docker://', 'oci://')
@@ -460,7 +553,7 @@ module Beaker
           },
         }
       else
-        # Assume it's a PVC namez
+        # Fallback: directly reference PVC (not recommended, kept for compatibility)
         vm_image = vm_image.sub(%r{^pvc://}, '') if vm_image.start_with?('pvc://')
         {
           'name' => 'rootdisk',
@@ -502,10 +595,12 @@ module Beaker
     # @param [Host] host The host to setup networking for
     def setup_networking(host)
       network_mode = host['network_mode'] || 'port-forward'
+      # Allow the VM SSH port to be configured per-host or use default
+      vm_ssh_port = host['vm_ssh_port'] || @options[:vm_ssh_port] || 22
 
       case network_mode
       when 'port-forward'
-        setup_port_forward(host)
+        setup_port_forward(host, vm_ssh_port)
       when 'nodeport'
         setup_nodeport(host)
       when 'multus'
@@ -513,26 +608,37 @@ module Beaker
       else
         raise "Unsupported network mode: #{network_mode}"
       end
+
+      # Configure SSH keys - ensure we use the matching private key for the public key
+      # that was injected into the VM via cloud-init
+      configure_ssh_keys(host)
     end
 
     ##
     # Setup port-forward networking
     # @param [Host] host The host
-    def setup_port_forward(host)
+    # @param [Integer] host_port The port on the VM to forward to (typically 22 for SSH)
+    def setup_port_forward(host, host_port)
       require 'beaker/hypervisor/port_forward'
       vm_name = host['vm_name']
 
+      @options['ssh']['port'] = nil
       local_port = find_free_port
 
+      @logger.info("Using local port #{local_port} for port-forward to VM #{vm_name}")
+
       host['ip'] = '127.0.0.1' # Port forwarding will use localhost
-      host['port'] = local_port # Default SSH port
-      host['ssh'] ||= {}
-      host['ssh']['port'] = local_port
+      host['port'] = nil # Port that clients should connect to (local port)
+      # Get current SSH options and modify them
+      ssh_options = host['ssh'] || {}
+      ssh_options['port'] = local_port
+      host['ssh'] = ssh_options
 
-      @logger.debug("Setting up port-forward for VM #{vm_name} on port #{local_port}")
+      @logger.debug("Setting up port-forward for VM #{vm_name} from localhost:#{local_port} to VM port #{host_port}")
+      @logger.info("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}, host['ssh'][:port]=#{host['ssh'][:port]}")
 
-      # TODO: This is a placeholder for the actual port on the VM
-      host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, 22, local_port)
+      # Setup port forwarding from local_port to host_port (22) on the VM
+      host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, host_port, local_port)
 
       @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
     end
@@ -552,8 +658,10 @@ module Beaker
 
       host['ip'] = node_ip
       host['port'] = node_port
-      host['ssh'] ||= {}
-      host['ssh']['port'] = node_port
+      # Get current SSH options and modify them
+      ssh_options = host['ssh'] || {}
+      ssh_options['port'] = node_port
+      host['ssh'] = ssh_options
       host['service_name'] = service_name
     end
 
@@ -569,8 +677,31 @@ module Beaker
 
       host['ip'] = external_ip
       host['port'] = 22
-      host['ssh'] ||= {}
-      host['ssh']['port'] = 22
+      # Get current SSH options and modify them
+      ssh_options = host['ssh'] || {}
+      ssh_options['port'] = 22
+      host['ssh'] = ssh_options
+    end
+
+    ##
+    # Configure SSH keys for the host
+    # Ensures the private key used for SSH matches the public key injected via cloud-init
+    # @param [Host] host The host to configure
+    def configure_ssh_keys(host)
+      key_pair = find_ssh_key_pair
+
+      # Only set the private key path if we found a matching pair
+      if key_pair[:private_key_path]
+        # Get the ssh options, modify them, and set them back
+        ssh_options = host['ssh'] || {}
+        # Set the keys array to use the matching private key
+        ssh_options['keys'] = [key_pair[:private_key_path]]
+        host['ssh'] = ssh_options
+
+        @logger.info("Configured SSH to use private key: #{key_pair[:private_key_path]}")
+      else
+        @logger.warn('Could not determine private key path, SSH will use default keys')
+      end
     end
 
     ##
@@ -603,31 +734,6 @@ module Beaker
       port = server.addr[1]
       server.close
       port
-    end
-
-    ##
-    # Wait for SSH to become available
-    # @param [Host] host The host to check SSH for
-    def wait_for_ssh(host)
-      @logger.debug("Waiting for SSH to be available on #{host['ip']}:#{host['port']}")
-
-      timeout = SSH_TIMEOUT
-      start_time = Time.now
-
-      loop do
-        begin
-          sock = TCPSocket.new(host['ip'], host['port'])
-          sock.close
-          @logger.debug("SSH is available on #{host['ip']}:#{host['port']}")
-          break
-        rescue Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ETIMEDOUT
-          # SSH not ready yet
-        end
-
-        raise "Timeout waiting for SSH on #{host['ip']}:#{host['port']}" if Time.now - start_time > timeout
-
-        sleep 2
-      end
     end
 
     ##
