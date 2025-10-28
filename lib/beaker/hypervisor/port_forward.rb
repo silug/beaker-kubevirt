@@ -245,15 +245,19 @@ class KubeVirtPortForwarder
   # @return [Faye::WebSocket::Client, nil] The connected WebSocket client or nil if it fails.
   def establish_websocket_with_retry(client_socket, retries: 10, delay: 5)
     uri = @kube_client.api_endpoint
-    server_root = uri.dup
-    server_root.path = uri.path.match(%r{^/k8s/clusters/[^/]+|^/api|^/apis/|/}).to_s.chomp('/')
-    base_http_url = server_root.to_s
-    base_ws_url = base_http_url.sub(/^http/, 'ws')
+    # Build base URL preserving any path prefix (e.g., /k8s/clusters/xyz in Rancher)
+    base_url = "#{uri.scheme}://#{uri.host}"
+    base_url += ":#{uri.port}" if uri.port && ![80, 443].include?(uri.port)
+    # Preserve the path prefix if it exists, removing any trailing API paths
+    path_prefix = uri.path.to_s.sub(%r{/api.*$}, '')
+    base_url += path_prefix unless path_prefix.empty? || path_prefix == '/'
+    base_ws_url = base_url.sub(/^http/, 'ws')
     url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{@namespace}/virtualmachineinstances/#{@vmi_name}/portforward/#{@target_port}"
     @logger.debug("Constructed WebSocket URL: #{url}")
 
     auth_token = @kube_client.auth_options[:bearer_token]
-    headers = { 'Authorization' => "Bearer #{auth_token}" }
+    headers = {}
+    headers['Authorization'] = "Bearer #{auth_token}" if auth_token && !auth_token.empty?
 
     retries.times do |i|
       return nil if client_socket.closed?
@@ -354,7 +358,7 @@ class KubeVirtPortForwarder
           websocket.send(data)
         end
       end
-    rescue IOError, Errno::ECONNRESET
+    rescue IOError, EOFError, Errno::ECONNRESET
       @logger.debug('Client socket closed. Shutting down proxy.')
       begin
         Timeout.timeout(5) do

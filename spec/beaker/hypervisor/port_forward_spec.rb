@@ -435,6 +435,348 @@ RSpec.describe KubeVirtPortForwarder do
       # Call the close handler with our mock event
       close_handler.call(close_event)
     end
+
+    # Fix: WebSocket URL construction
+    context 'URL construction' do
+      it 'constructs correct WebSocket URL from standard Kubernetes endpoint' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/apis/kubevirt.io'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        # Capture the URL passed to WebSocket
+        captured_url = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |url, _protocols, _options|
+          captured_url = url
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        # Mock Queue and EventMachine to simulate connection attempt
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call # Execute the block to create the WebSocket
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+      end
+
+      it 'constructs correct WebSocket URL with custom port' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com:6443/apis/kubevirt.io'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_url = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |url, _protocols, _options|
+          captured_url = url
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        expect(captured_url).to eq('wss://kubernetes.example.com:6443/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+      end
+
+      it 'constructs correct WebSocket URL from Rancher-style endpoint' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://rancher.example.com/k8s/clusters/local/apis/kubevirt.io'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_url = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |url, _protocols, _options|
+          captured_url = url
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        # The path prefix /k8s/clusters/local should be preserved
+        expect(captured_url).to eq('wss://rancher.example.com/k8s/clusters/local/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+      end
+
+      it 'constructs correct WebSocket URL from Rancher-style endpoint with /api path' do
+        # This test replicates the exact scenario from the bug report where
+        # the Kubernetes client endpoint ends in /api (not /apis/kubevirt.io)
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://rancher.clark-evans.com/k8s/clusters/c-m-abcd1234/api'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'kubevirt-image-builder',
+          vmi_name: 'beaker-89cb7c7f-win2022a',
+          target_port: 22,
+          local_port: 43831,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_url = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |url, _protocols, _options|
+          captured_url = url
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        # The /k8s/clusters/c-m-abcd1234 path should be preserved, but /api should be removed
+        expect(captured_url).to eq('wss://rancher.clark-evans.com/k8s/clusters/c-m-abcd1234/apis/subresources.kubevirt.io/v1/namespaces/kubevirt-image-builder/virtualmachineinstances/beaker-89cb7c7f-win2022a/portforward/22')
+      end
+
+      it 'does not include default HTTPS port 443 in URL' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com:443/apis/kubevirt.io'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_url = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |url, _protocols, _options|
+          captured_url = url
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        # Port 443 should not appear in the URL
+        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        expect(captured_url).not_to include(':443')
+      end
+
+      it 'handles endpoint with only root path correctly' do
+        # Test that a simple endpoint with just "/" doesn't add extra slashes
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_url = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |url, _protocols, _options|
+          captured_url = url
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        # Should not have double slashes in the path (after the protocol)
+        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        # Check that we don't have triple slashes or double slashes in the path
+        expect(captured_url).not_to match(%r{://.*//})
+      end
+    end
+
+    # Fix: Bearer token only set when present
+    context 'authentication headers' do
+      it 'includes Authorization header when bearer token is present' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/api'),
+          auth_options: { bearer_token: 'my-secret-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_headers = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |_url, _protocols, options|
+          captured_headers = options[:headers]
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        expect(captured_headers).to include('Authorization' => 'Bearer my-secret-token')
+      end
+
+      it 'does not include Authorization header when bearer token is nil' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/api'),
+          auth_options: { bearer_token: nil },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_headers = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |_url, _protocols, options|
+          captured_headers = options[:headers]
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        expect(captured_headers).not_to have_key('Authorization')
+      end
+
+      it 'does not include Authorization header when bearer token is empty string' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/api'),
+          auth_options: { bearer_token: '' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_headers = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |_url, _protocols, options|
+          captured_headers = options[:headers]
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        expect(captured_headers).not_to have_key('Authorization')
+      end
+    end
   end
 
   describe '#proxy_traffic' do
@@ -513,6 +855,48 @@ RSpec.describe KubeVirtPortForwarder do
       # Thread should exit after timeout
       proxy_thread.join(1)
       expect(proxy_thread.alive?).to be false
+    end
+
+    # Fix: EOFError handling
+    it 'handles EOFError when client closes connection gracefully' do
+      # Mock a socket that raises EOFError on read (normal client disconnect)
+      allow(client_socket).to receive(:readpartial).and_raise(EOFError)
+      allow(client_socket).to receive(:close)
+
+      # WebSocket should be closed when client disconnects
+      expect(websocket).to receive(:close)
+
+      # Should log the disconnect
+      expect(logger).to receive(:debug).with(/Client socket closed/)
+
+      # Should not raise an exception
+      expect do
+        forwarder.send(:proxy_traffic, client_socket, websocket)
+      end.not_to raise_error
+    end
+
+    it 'handles EOFError alongside IOError and ECONNRESET' do
+      # Test that all three exception types are handled the same way
+      [EOFError, IOError, Errno::ECONNRESET].each do |exception_class|
+        socket = instance_double(TCPSocket)
+        allow(socket).to receive(:readpartial).and_raise(exception_class)
+        allow(socket).to receive(:close)
+
+        ws = instance_double(
+          Faye::WebSocket::Client,
+          protocol: KubeVirtPortForwarder::PLAIN_STREAM_PROTOCOL,
+          on: nil,
+          send: nil,
+          close: nil,
+          ready_state: Faye::WebSocket::Client::OPEN,
+        )
+
+        expect(logger).to receive(:debug).with(/Client socket closed/)
+
+        expect do
+          forwarder.send(:proxy_traffic, socket, ws)
+        end.not_to raise_error
+      end
     end
 
     # Issue #7: WebSocket cleanup - NOT A PROBLEM
