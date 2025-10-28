@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description = 'Enables Beaker to provision VMs using KubeVirt for automated acceptance testing of Puppet code.'
   spec.homepage = 'https://github.com/voxpupuli/beaker-kubevirt'
   spec.license = 'AGPL-3.0-or-later'
-  spec.required_ruby_version = '>= 2.7.0'
+  spec.required_ruby_version = '>= 3.2'
 
   spec.metadata['source_code_uri'] = spec.homepage
   spec.metadata['changelog_uri'] = "#{spec.homepage}/blob/main/CHANGELOG.md"
