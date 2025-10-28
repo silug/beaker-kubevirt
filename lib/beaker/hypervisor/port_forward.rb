@@ -34,6 +34,16 @@ class KubeVirtPortForwarder
   # The channel byte for the error stream from the server.
   ERROR_CHANNEL = "\x01"
 
+  # Class-level tracking of EventMachine reactor ownership
+  # EventMachine has a single global reactor, so we need to track which
+  # forwarder instance started it to avoid stopping it prematurely
+  @reactor_owner_mutex = Mutex.new
+  @reactor_owner = nil
+
+  class << self
+    attr_accessor :reactor_owner_mutex, :reactor_owner
+  end
+
   # @param kube_client [Kubeclient::Client] An initialized kubeclient client.
   # @param namespace [String] The Kubernetes namespace of the VMI.
   # @param vmi_name [String] The name of the VirtualMachineInstance.
@@ -55,6 +65,7 @@ class KubeVirtPortForwarder
     @server_thread = nil
     @reactor_thread = nil
     @connection_threads = []
+    @shutdown = false
   end
 
   # Starts the local TCP server and the EventMachine reactor in background threads.
@@ -63,17 +74,34 @@ class KubeVirtPortForwarder
 
     @logger.info("Starting local proxy on 127.0.0.1:#{@local_port} for vmi://#{@namespace}/#{@vmi_name}:#{@target_port}")
 
+    # Reset shutdown flag
+    @shutdown = false
+
     # Start the EventMachine reactor in a dedicated thread to handle WebSocket I/O.
-    @reactor_thread = Thread.new { EventMachine.run }
-    # Wait for the reactor to be running
-    sleep 0.1 until EventMachine.reactor_running?
+    # EventMachine has a single global reactor, so we need to check if it's already running
+    start_reactor = false
+    self.class.reactor_owner_mutex.synchronize do
+      unless EventMachine.reactor_running?
+        start_reactor = true
+        self.class.reactor_owner = self
+      end
+    end
+
+    if start_reactor
+      @reactor_thread = Thread.new { EventMachine.run }
+      # Wait for the reactor to be running
+      sleep 0.1 until EventMachine.reactor_running?
+      @logger.debug('Started EventMachine reactor (owned by this forwarder)')
+    else
+      @logger.debug('Using existing EventMachine reactor (owned by another forwarder)')
+    end
 
     @server = TCPServer.new('127.0.0.1', @local_port)
     state_transition_to(:running)
 
     @server_thread = Thread.new do
       loop do
-        break if @state == :stopping
+        break if @state == :stopping || @shutdown
 
         begin
           # Accept a connection from a client (e.g., Beaker's SSH).
@@ -103,6 +131,9 @@ class KubeVirtPortForwarder
 
     @logger.info("Stopping port forwarder for vmi://#{@namespace}/#{@vmi_name}:#{@target_port}")
 
+    # Set shutdown flag to signal threads to stop gracefully
+    @shutdown = true
+
     # Close the main server socket to stop accepting new connections.
     @server&.close
     @server = nil
@@ -117,8 +148,31 @@ class KubeVirtPortForwarder
       @connection_threads.clear
     end
 
+    # Give threads a chance to terminate gracefully
     threads_to_join.each do |thread|
-      thread.kill # Ensure threads are terminated
+      # Raise an exception in the thread to interrupt blocking I/O
+      thread.raise(IOError, 'Port forwarder shutting down') if thread.alive?
+    end
+
+    # Wait for threads to finish with a timeout
+    deadline = Time.now + 5
+    threads_to_join.each do |thread|
+      remaining = deadline - Time.now
+      if remaining > 0
+        # Wait for thread to finish, but don't wait longer than the deadline
+        begin
+          thread.join(remaining)
+        rescue StandardError => e
+          # Thread may raise an exception when we called thread.raise
+          @logger.debug("Thread exited with exception during shutdown: #{e.class}: #{e.message}")
+        end
+      end
+
+      # If thread is still alive after timeout, kill it as last resort
+      next unless thread.alive?
+
+      @logger.warn("Force-killing connection thread that didn't shut down gracefully")
+      thread.kill
       begin
         thread.join
       rescue StandardError
@@ -126,9 +180,24 @@ class KubeVirtPortForwarder
       end
     end
 
-    # Stop the EventMachine reactor.
-    EventMachine.stop if EventMachine.reactor_running?
-    @reactor_thread&.join
+    # Stop the EventMachine reactor only if this instance owns it.
+    # EventMachine has a single global reactor, so we must not stop it
+    # if other forwarders are still using it.
+    should_stop_reactor = false
+    self.class.reactor_owner_mutex.synchronize do
+      if self.class.reactor_owner == self
+        should_stop_reactor = true
+        self.class.reactor_owner = nil
+      end
+    end
+
+    if should_stop_reactor
+      EventMachine.stop if EventMachine.reactor_running?
+      @reactor_thread&.join
+      @logger.debug('Stopped EventMachine reactor (owned by this forwarder)')
+    else
+      @logger.debug('Not stopping EventMachine reactor (owned by another forwarder)')
+    end
 
     @logger.info('Port forwarder stopped.')
     state_transition_to(:stopped)
@@ -146,6 +215,18 @@ class KubeVirtPortForwarder
     else
       @logger.error('Failed to establish connection to VMI after multiple retries. Closing client socket.')
       client_socket.close
+    end
+  rescue IOError => e
+    # IOError is raised during shutdown - this is expected
+    if e.message.include?('shutting down')
+      @logger.debug('Connection handler shutting down gracefully')
+    else
+      report_error(e, 'Error in connection handler thread')
+    end
+    begin
+      client_socket.close
+    rescue StandardError
+      nil
     end
   rescue StandardError => e
     report_error(e, 'Error in connection handler thread')
@@ -216,13 +297,13 @@ class KubeVirtPortForwarder
             end
 
             @logger.warn(err_msg)
-            connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting.positive?
+            connection_status_q.push(RuntimeError.new(err_msg))
           end
         end
       rescue StandardError => e
         err_msg = "Failed to establish WebSocket connection: #{e.class}: #{e.message}"
         @logger.error(err_msg)
-        connection_status_q.push(RuntimeError.new(err_msg)) if connection_status_q.num_waiting.positive?
+        connection_status_q.push(RuntimeError.new(err_msg))
       end
 
       result = connection_status_q.pop
@@ -249,8 +330,23 @@ class KubeVirtPortForwarder
       @logger.info("Using raw stream protocol (negotiated: '#{websocket.protocol || 'none'}')")
     end
 
+    # Mutex to synchronize access to client_socket from multiple threads
+    socket_mutex = Mutex.new
+
+    # Read timeout to prevent hanging indefinitely
+    read_timeout = 300 # 5 minutes
+
     to_ws = Thread.new do
       loop do
+        # Use IO.select to implement a read timeout
+        readable, = IO.select([client_socket], nil, nil, read_timeout)
+
+        if readable.nil?
+          # Timeout occurred
+          @logger.warn("Client socket read timeout after #{read_timeout} seconds. Closing connection.")
+          break
+        end
+
         data = client_socket.readpartial(4096)
         if use_channels
           websocket.send(DATA_CHANNEL + data)
@@ -275,25 +371,31 @@ class KubeVirtPortForwarder
     websocket.on :message do |event|
       payload = event.data
 
-      if use_channels
-        channel = payload[0]
-        case channel
-        when DATA_CHANNEL
-          client_socket.write(payload[1..])
-        when ERROR_CHANNEL
-          report_error(RuntimeError.new("Received error from server: #{payload[1..].inspect}"))
+      # Synchronize writes to client_socket
+      socket_mutex.synchronize do
+        if use_channels
+          channel = payload[0]
+          case channel
+          when DATA_CHANNEL
+            client_socket.write(payload[1..])
+          when ERROR_CHANNEL
+            report_error(RuntimeError.new("Received error from server: #{payload[1..].inspect}"))
+          else
+            @logger.warn("Received message on unknown channel: #{channel.inspect}. Treating as raw data.")
+            client_socket.write(payload)
+          end
         else
-          @logger.warn("Received message on unknown channel: #{channel.inspect}. Treating as raw data.")
           client_socket.write(payload)
         end
-      else
-        client_socket.write(payload)
+      rescue IOError, Errno::EPIPE, Errno::ECONNRESET => e
+        @logger.debug("Failed to write to client socket: #{e.class}: #{e.message}")
+        # Socket is closed or broken, ignore the error
       end
     end
 
     websocket.on :close do |event|
       @logger.info("WebSocket connection closed. Code: #{event.code}, Reason: #{event.reason}")
-      begin
+      socket_mutex.synchronize do
         client_socket.close
       rescue StandardError
         nil
@@ -307,7 +409,9 @@ class KubeVirtPortForwarder
   def report_error(error, context = nil)
     log_message = "ERROR: #{context}: " if context
     log_message ||= 'ERROR: '
-    log_message += "#{error.class}: #{error.message}\n#{error.backtrace.join("\n")}"
+    log_message += "#{error.class}: #{error.message}"
+    # Backtrace may be nil for manually constructed errors
+    log_message += "\n#{error.backtrace.join("\n")}" if error.backtrace
     @logger.error(log_message)
     @on_error&.call(error)
   end
