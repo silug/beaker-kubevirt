@@ -299,7 +299,7 @@ module Beaker
     def load_kubeconfig
       raise "Kubeconfig file not found: #{@kubeconfig_path}" unless File.exist?(@kubeconfig_path)
 
-      YAML.safe_load(File.read(@kubeconfig_path))
+      YAML.safe_load_file(@kubeconfig_path)
     end
 
     ##

@@ -424,7 +424,7 @@ RSpec.describe Beaker::Kubevirt do
         super().merge(ssh_key: '/home/user/.ssh/id_test.pub')
       end
 
-      it 'returns the public key content and matching private key path' do # rubocop:disable RSpec/ExampleLength
+      it 'returns the public key content and matching private key path' do
         allow(File).to receive(:exist?).with('/home/user/.ssh/id_test.pub').and_return(true)
         allow(File).to receive(:exist?).with('/home/user/.ssh/id_test').and_return(true)
         allow(File).to receive(:read).with('/home/user/.ssh/id_test.pub').and_return('ssh-rsa test-key')
@@ -449,7 +449,7 @@ RSpec.describe Beaker::Kubevirt do
         super().merge(ssh_key: 'ssh-rsa direct-content')
       end
 
-      it 'returns the public key content with nil private key path' do # rubocop:disable RSpec/ExampleLength
+      it 'returns the public key content with nil private key path' do
         allow(File).to receive(:exist?).with('ssh-rsa direct-content').and_return(false)
         result = hypervisor.send(:find_ssh_key_pair)
         aggregate_failures do
@@ -462,7 +462,7 @@ RSpec.describe Beaker::Kubevirt do
     context 'when searching for default keys' do
       let(:options) { super().dup.tap { |opts| opts.delete(:ssh_key) } }
 
-      it 'finds matching ed25519 key pair' do # rubocop:disable RSpec/ExampleLength
+      it 'finds matching ed25519 key pair' do
         ed25519_path = File.join(Dir.home, '.ssh', 'id_ed25519')
         allow(File).to receive(:exist?).and_return(false)
         allow(File).to receive(:exist?).with(ed25519_path).and_return(true)
@@ -475,7 +475,7 @@ RSpec.describe Beaker::Kubevirt do
         end
       end
 
-      it 'finds matching rsa key pair when ed25519 not available' do # rubocop:disable RSpec/ExampleLength
+      it 'finds matching rsa key pair when ed25519 not available' do
         rsa_path = File.join(Dir.home, '.ssh', 'id_rsa')
         allow(File).to receive(:exist?).and_return(false)
         allow(File).to receive(:exist?).with(rsa_path).and_return(true)
