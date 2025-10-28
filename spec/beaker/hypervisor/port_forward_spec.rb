@@ -5,6 +5,7 @@ require 'beaker/hypervisor/port_forward'
 require 'socket'
 require 'timeout'
 
+# rubocop:disable RSpec/SpecFilePathFormat
 RSpec.describe KubeVirtPortForwarder do
   let(:kube_client) do
     instance_double(
@@ -135,7 +136,7 @@ RSpec.describe KubeVirtPortForwarder do
       end
 
       # Create 5 threads that all try to start simultaneously
-      threads = 5.times.map do
+      threads = Array.new(5) do
         Thread.new { forwarder.start }
       end
 
@@ -437,7 +438,7 @@ RSpec.describe KubeVirtPortForwarder do
     end
 
     # Fix: WebSocket URL construction
-    context 'URL construction' do
+    context 'when constructing WebSocket URLs' do
       it 'constructs correct WebSocket URL from standard Kubernetes endpoint' do
         kube_client = instance_double(
           Kubeclient::Client,
@@ -554,16 +555,16 @@ RSpec.describe KubeVirtPortForwarder do
         # the Kubernetes client endpoint ends in /api (not /apis/kubevirt.io)
         kube_client = instance_double(
           Kubeclient::Client,
-          api_endpoint: URI.parse('https://rancher.clark-evans.com/k8s/clusters/c-m-abcd1234/api'),
+          api_endpoint: URI.parse('https://rancher.example.com/k8s/clusters/c-m-abcd1234/api'),
           auth_options: { bearer_token: 'test-token' },
           ssl_options: {},
         )
         forwarder = described_class.new(
           kube_client: kube_client,
-          namespace: 'kubevirt-image-builder',
-          vmi_name: 'beaker-89cb7c7f-win2022a',
+          namespace: 'default',
+          vmi_name: 'test-vm',
           target_port: 22,
-          local_port: 43831,
+          local_port: 43_831,
           logger: logger,
         )
 
@@ -585,7 +586,7 @@ RSpec.describe KubeVirtPortForwarder do
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
         # The /k8s/clusters/c-m-abcd1234 path should be preserved, but /api should be removed
-        expect(captured_url).to eq('wss://rancher.clark-evans.com/k8s/clusters/c-m-abcd1234/apis/subresources.kubevirt.io/v1/namespaces/kubevirt-image-builder/virtualmachineinstances/beaker-89cb7c7f-win2022a/portforward/22')
+        expect(captured_url).to eq('wss://rancher.example.com/k8s/clusters/c-m-abcd1234/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
       end
 
       it 'does not include default HTTPS port 443 in URL' do
@@ -668,7 +669,7 @@ RSpec.describe KubeVirtPortForwarder do
     end
 
     # Fix: Bearer token only set when present
-    context 'authentication headers' do
+    context 'with authentication headers' do
       it 'includes Authorization header when bearer token is present' do
         kube_client = instance_double(
           Kubeclient::Client,
@@ -797,11 +798,11 @@ RSpec.describe KubeVirtPortForwarder do
       allow(client_socket).to receive(:write)
       allow(client_socket).to receive(:close)
 
-      # Stub IO.select to work with mock sockets
+      # Stub wait_readable to work with mock sockets
       # Tests that specifically test timeout behavior will override this
-      allow(IO).to receive(:select) do |readable, _writable, _exceptions, _timeout|
-        # Return the readable sockets immediately (simulating data available)
-        [readable, nil, nil]
+      allow(client_socket).to receive(:wait_readable) do |_timeout|
+        # Return truthy value immediately (simulating data available)
+        client_socket
       end
     end
 
@@ -827,16 +828,16 @@ RSpec.describe KubeVirtPortForwarder do
     end
 
     # Issue #6: No timeout on socket reads
-    # FIXED: Now uses IO.select with a 5-minute timeout
+    # FIXED: Now uses wait_readable with a 5-minute timeout
     it 'times out after 5 minutes of inactivity on client socket read' do
       # Mock a socket that never returns data
       hanging_socket = instance_double(TCPSocket)
       allow(hanging_socket).to receive(:close)
 
-      # Mock IO.select to simulate timeout after a short delay (not 5 minutes!)
-      select_called = false
-      allow(IO).to receive(:select) do |readable, _writable, _exceptions, timeout|
-        select_called = true
+      # Mock wait_readable to simulate timeout after a short delay (not 5 minutes!)
+      wait_readable_called = false
+      allow(hanging_socket).to receive(:wait_readable) do |_timeout|
+        wait_readable_called = true
         # Simulate timeout by returning nil
         nil
       end
@@ -846,11 +847,11 @@ RSpec.describe KubeVirtPortForwarder do
         forwarder.send(:proxy_traffic, hanging_socket, websocket)
       end
 
-      # Give it time to call IO.select
+      # Give it time to call wait_readable
       sleep 0.2
 
-      # Confirm IO.select was called with timeout
-      expect(select_called).to be true
+      # Confirm wait_readable was called with timeout
+      expect(wait_readable_called).to be true
 
       # Thread should exit after timeout
       proxy_thread.join(1)
@@ -879,6 +880,7 @@ RSpec.describe KubeVirtPortForwarder do
       # Test that all three exception types are handled the same way
       [EOFError, IOError, Errno::ECONNRESET].each do |exception_class|
         socket = instance_double(TCPSocket)
+        allow(socket).to receive(:wait_readable).and_return(socket)
         allow(socket).to receive(:readpartial).and_raise(exception_class)
         allow(socket).to receive(:close)
 
@@ -921,6 +923,8 @@ RSpec.describe KubeVirtPortForwarder do
 
       socket1 = instance_double(TCPSocket)
       socket2 = instance_double(TCPSocket)
+      allow(socket1).to receive(:wait_readable).and_return(socket1)
+      allow(socket2).to receive(:wait_readable).and_return(socket2)
       allow(socket1).to receive(:readpartial).and_raise(IOError)
       allow(socket2).to receive(:readpartial).and_raise(IOError)
 
@@ -989,7 +993,7 @@ RSpec.describe KubeVirtPortForwarder do
       forwarder.send(:proxy_traffic, client_socket, ws_with_channels)
 
       # Send an error channel message
-      error_msg = KubeVirtPortForwarder::ERROR_CHANNEL + 'Fatal error from server'
+      error_msg = "#{KubeVirtPortForwarder::ERROR_CHANNEL}Fatal error from server"
       event = double('WebSocket Event', data: error_msg)
 
       # After fix for Issue #16, this should not crash
@@ -1045,6 +1049,7 @@ RSpec.describe KubeVirtPortForwarder do
         )
 
         socket = instance_double(TCPSocket)
+        allow(socket).to receive(:wait_readable).and_return(socket)
         allow(socket).to receive(:readpartial).and_raise(IOError)
 
         # The code should just use whatever protocol without validation
@@ -1178,7 +1183,7 @@ RSpec.describe KubeVirtPortForwarder do
       end
 
       # Create multiple threads doing concurrent state transitions
-      threads = 10.times.map do
+      threads = Array.new(10) do
         Thread.new do
           100.times do
             forwarder.send(:state_transition_to, :starting)
@@ -1198,7 +1203,8 @@ RSpec.describe KubeVirtPortForwarder do
 
       # Verify final state is valid (if not thread-safe, could be corrupted)
       expect(forwarder.state).to be_a(Symbol)
-      expect(%i[new starting running stopping stopped error]).to include(forwarder.state)
+      valid_states = %i[new starting running stopping stopped error]
+      expect(valid_states).to include(forwarder.state)
     end
 
     it 'only allows valid state transitions' do
@@ -1272,7 +1278,7 @@ RSpec.describe KubeVirtPortForwarder do
       expect(all_log_messages.size).to be > 0
 
       # Verify the WebSocket URL was logged (shows we're testing the right code path)
-      url_logged = all_log_messages.any? { |msg| msg.match(/Constructed WebSocket URL/) }
+      url_logged = all_log_messages.any? { |msg| msg.include?('Constructed WebSocket URL') }
       expect(url_logged).to be true
     end
 
@@ -1333,3 +1339,4 @@ RSpec.describe KubeVirtPortForwarder do
     end
   end
 end
+# rubocop:enable RSpec/SpecFilePathFormat

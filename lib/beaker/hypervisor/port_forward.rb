@@ -158,7 +158,7 @@ class KubeVirtPortForwarder
     deadline = Time.now + 5
     threads_to_join.each do |thread|
       remaining = deadline - Time.now
-      if remaining > 0
+      if remaining.positive?
         # Wait for thread to finish, but don't wait longer than the deadline
         begin
           thread.join(remaining)
@@ -342,10 +342,8 @@ class KubeVirtPortForwarder
 
     to_ws = Thread.new do
       loop do
-        # Use IO.select to implement a read timeout
-        readable, = IO.select([client_socket], nil, nil, read_timeout)
-
-        if readable.nil?
+        # Use wait_readable to implement a read timeout
+        unless client_socket.wait_readable(read_timeout)
           # Timeout occurred
           @logger.warn("Client socket read timeout after #{read_timeout} seconds. Closing connection.")
           break
@@ -358,7 +356,7 @@ class KubeVirtPortForwarder
           websocket.send(data)
         end
       end
-    rescue IOError, EOFError, Errno::ECONNRESET
+    rescue Errno::ECONNRESET, IOError
       @logger.debug('Client socket closed. Shutting down proxy.')
       begin
         Timeout.timeout(5) do
@@ -421,6 +419,7 @@ class KubeVirtPortForwarder
   end
 
   # Manages state transitions with thread safety.
+  # rubocop:disable Naming/PredicateMethod
   def state_transition_to(new_state)
     @mutex.synchronize do
       case new_state
@@ -437,4 +436,5 @@ class KubeVirtPortForwarder
     end
     true
   end
+  # rubocop:enable Naming/PredicateMethod
 end

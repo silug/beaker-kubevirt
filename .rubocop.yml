@@ -1,5 +1,30 @@
 ---
 inherit_gem:
   voxpupuli-rubocop: rubocop.yml
+
 Layout/LineLength:
+  Enabled: false
+
+# Increase RSpec example length limits for integration tests
+RSpec/ExampleLength:
+  Max: 40
+
+# Allow more expectations in integration tests
+RSpec/MultipleExpectations:
+  Max: 5
+
+# Allow more memoized helpers for complex test setups
+RSpec/MultipleMemoizedHelpers:
+  Max: 10
+
+# Allow instance variables in before blocks for reactor state tracking
+RSpec/InstanceVariable:
+  Enabled: false
+
+# MessageSpies style is a preference - allow both styles
+RSpec/MessageSpies:
+  Enabled: false
+
+# Allow non-verified doubles for flexibility in testing
+RSpec/VerifiedDoubles:
   Enabled: false
