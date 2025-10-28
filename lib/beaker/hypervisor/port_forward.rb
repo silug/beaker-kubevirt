@@ -218,7 +218,9 @@ class KubeVirtPortForwarder
     end
   rescue IOError => e
     # IOError is raised during shutdown - this is expected
-    if e.message.include?('shutting down')
+    if e.is_a?(EOFError)
+      @logger.debug('Connection closed cleanly (EOF) - normal shutdown')
+    elsif e.message.include?('shutting down')
       @logger.debug('Connection handler shutting down gracefully')
     else
       report_error(e, 'Error in connection handler thread')
@@ -356,8 +358,12 @@ class KubeVirtPortForwarder
           websocket.send(data)
         end
       end
-    rescue Errno::ECONNRESET, IOError
-      @logger.debug('Client socket closed. Shutting down proxy.')
+    rescue Errno::ECONNRESET, IOError => e
+      if e.is_a?(EOFError)
+        @logger.debug('Client connection closed cleanly (EOF). Shutting down proxy.')
+      else
+        @logger.debug("Client socket closed (#{e.class}: #{e.message}). Shutting down proxy.")
+      end
       begin
         Timeout.timeout(5) do
           websocket.close if websocket.ready_state == Faye::WebSocket::Client::OPEN

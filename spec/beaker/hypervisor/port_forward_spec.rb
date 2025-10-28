@@ -867,8 +867,8 @@ RSpec.describe KubeVirtPortForwarder do
       # WebSocket should be closed when client disconnects
       expect(websocket).to receive(:close)
 
-      # Should log the disconnect
-      expect(logger).to receive(:debug).with(/Client socket closed/)
+      # Should log the disconnect with a clear message indicating clean shutdown
+      expect(logger).to receive(:debug).with(/Client connection closed cleanly \(EOF\)/)
 
       # Should not raise an exception
       expect do
@@ -893,7 +893,12 @@ RSpec.describe KubeVirtPortForwarder do
           ready_state: Faye::WebSocket::Client::OPEN,
         )
 
-        expect(logger).to receive(:debug).with(/Client socket closed/)
+        # EOFError gets a more specific message
+        if exception_class == EOFError
+          expect(logger).to receive(:debug).with(/Client connection closed cleanly \(EOF\)/)
+        else
+          expect(logger).to receive(:debug).with(/Client socket closed/)
+        end
 
         expect do
           forwarder.send(:proxy_traffic, socket, ws)
