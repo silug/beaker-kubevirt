@@ -97,7 +97,7 @@ RSpec.describe Beaker::KubevirtHelper do
 
       before do
         allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
-        allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+        allow(YAML).to receive(:safe_load_file).with('/tmp/test-kubeconfig').and_return(mock_config)
         allow(Kubeclient::Client).to receive(:new).and_return(clients[:k8s], clients[:kubevirt])
       end
 
@@ -116,7 +116,7 @@ RSpec.describe Beaker::KubevirtHelper do
 
     before do
       allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
-      allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+      allow(YAML).to receive(:safe_load_file).with('/tmp/test-kubeconfig').and_return(mock_config)
     end
 
     it 'loads kubeconfig from specified path' do
@@ -234,7 +234,7 @@ RSpec.describe Beaker::KubevirtHelper do
 
     before do
       allow(File).to receive(:exist?).with('/tmp/test-kubeconfig').and_return(true)
-      allow(File).to receive(:read).with('/tmp/test-kubeconfig').and_return(mock_config.to_yaml)
+      allow(YAML).to receive(:safe_load_file).with('/tmp/test-kubeconfig').and_return(mock_config)
       allow(Kubeclient::Config).to receive(:read).and_raise(RuntimeError, 'Unknown kubeconfig version')
       allow(Kubeclient::Client).to receive(:new).and_return(clients[:k8s], clients[:kubevirt])
       allow(kubevirt_helper).to receive(:write_temp_file).and_return('/tmp/ca-cert')
