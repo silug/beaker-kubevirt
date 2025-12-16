@@ -48,15 +48,15 @@ HOSTS:
   centos-vm:
     platform: el-8-x86_64
     hypervisor: kubevirt
-    vm_image: quay.io/kubevirt/fedora-cloud-container-disk-demo
-    network_mode: port-forward
-    ssh_key: ~/.ssh/id_rsa.pub
-    cpu: 2
-    memory: 4Gi
+    kubevirt_vm_image: docker://quay.io/kubevirt/fedora-cloud-container-disk-demo
+    kubevirt_network_mode: port-forward
+    kubevirt_ssh_key: ~/.ssh/id_rsa.pub
+    kubevirt_cpus: 2
+    kubevirt_memory: 4Gi
 
 CONFIG:
   # Global KubeVirt configuration
-  kubeconfig: ~/.kube/config
+  kubeconfig: <%= ENV.fetch('KUBECONFIG', '~/.kube/config') %>
   kubecontext: my-context  # optional
   namespace: beaker-tests  # required - namespace for all VMs
   ssh:
@@ -71,30 +71,55 @@ CONFIG:
 | `kubeconfig` | Path to kubeconfig file | Yes | `$KUBECONFIG` or `~/.kube/config` | CONFIG (global) |
 | `kubecontext` | Kubernetes context to use | No | Current context | CONFIG (global) |
 | `namespace` | Kubernetes namespace for VMs | **Yes** | `default` | **CONFIG (global)** |
-| `vm_image` | VM image specification | Yes | - | HOSTS (per-host) |
-| `network_mode` | Networking mode | No | `port-forward` | HOSTS (per-host) |
-| `networks` | Custom network configuration | No | Auto-generated | HOSTS (per-host) |
-| `ssh_key` | SSH public key path or content | Yes | Auto-detect from `~/.ssh/` | HOSTS (per-host) |
-| `cpu` | CPU cores for VM | No | `1` | HOSTS (per-host) |
-| `memory` | Memory for VM | No | `2Gi` | HOSTS (per-host) |
-| `disk_size` | Size of the root disk | No | `10Gi` | HOSTS (per-host) |
-| `cloud_init` | Custom cloud-init YAML | No | Auto-generated | HOSTS (per-host) |
+| `kubevirt_vm_image` | VM image specification | Yes | - | HOSTS (per-host) |
+| `kubevirt_network_mode` | Networking mode | No | `port-forward` | HOSTS (per-host) |
+| `kubevirt_networks` | Custom network configuration | No | Auto-generated | HOSTS (per-host) |
+| `kubevirt_ssh_key` | SSH public key path or content | Yes | Auto-detect from `~/.ssh/` | HOSTS (per-host) |
+| `kubevirt_cpus` | CPU cores for VM | No | `1` | HOSTS (per-host) |
+| `kubevirt_memory` | Memory for VM | No | `2Gi` | HOSTS (per-host) |
+| `kubevirt_disk_size` | Size of the root disk | No | `10Gi` | HOSTS (per-host) |
+| `kubevirt_cloud_init` | Custom cloud-init YAML | No | Auto-generated | HOSTS (per-host) |
+| `kubevirt_vm_ssh_port` | SSH port inside the VM | No | `22` | HOSTS (per-host) |
+| `kubevirt_disable_virtio` | Disable virtio devices (for Windows compatibility). If set to true the disk bus will be set to `sata` and the network adapter will be model `e1000` | No | `false` | HOSTS (per-host) |
 
 **Important**: The `namespace`, `kubeconfig`, and `kubecontext` options must be specified in the global `CONFIG` section, not per-host. All VMs will be created in the same Kubernetes namespace.
 
+Notes:
+- Several per-host options support global fallbacks via `CONFIG` (e.g., `kubevirt_cpus`, `kubevirt_memory`, `kubevirt_vm_ssh_port`).
+- The `networks` key for Multus is intentionally unprefixed (use `networks`, not `kubevirt_networks`).
+
 ### VM Image Formats
 
-The `vm_image` option supports several formats:
+The `kubevirt_vm_image` option supports several formats:
 
-- **Container image**: `quay.io/kubevirt/fedora-cloud-container-disk-demo`
+- **Container image**: `docker://quay.io/kubevirt/fedora-cloud-container-disk-demo` or `oci://quay.io/kubevirt/fedora-cloud-container-disk-demo`
 - **PVC reference**: `pvc:my-vm-disk` or just `my-vm-disk`
-- **DataVolume**: `http://example.com/my-datavolume.img` or `https://example.com/my-datavolume.img` NOTE: CDI must be installed in the cluster for DataVolume support.
+- **DataVolume**: `http://example.com/my-datavolume.img` or `https://example.com/my-datavolume.img` NOTE: [KubeVirt CDI](https://github.com/kubevirt/containerized-data-importer) must be installed in the cluster for DataVolume support.
 
 ### Network Modes
 
 - **port-forward**: Uses `kubectl port-forward` (default, works everywhere)
 - **nodeport**: Creates a NodePort service (requires node access)
 - **multus**: Uses Multus bridge networking (requires Multus CNI)
+
+#### Multus networks example
+
+When using `kubevirt_network_mode: multus`, specify one or more Multus attachments via an unprefixed `networks:` array. Each item requires a unique `name` and the Multus `networkName` provided as `multus_network_name`.
+
+```yaml
+HOSTS:
+  multus-vm:
+    platform: el-8-x86_64
+    hypervisor: kubevirt
+    kubevirt_vm_image: docker://quay.io/kubevirt/fedora-cloud-container-disk-demo
+    kubevirt_network_mode: multus
+    kubevirt_ssh_key: ~/.ssh/id_rsa.pub
+    networks:
+      - name: ext0
+        multus_network_name: my-bridge-network
+      - name: ext1
+        multus_network_name: another-network
+```
 
 ## Usage Example
 
@@ -104,12 +129,11 @@ HOSTS:
   puppet-agent:
     platform: el-8-x86_64
     hypervisor: kubevirt
-    vm_image: quay.io/kubevirt/centos-stream8-container-disk-demo
-    network_mode: port-forward
-    ssh_key: ~/.ssh/id_rsa.pub
-    cpu: 2
-    memory: 4Gi
-
+    kubevirt_vm_image: docker://quay.io/kubevirt/centos-stream8-container-disk-demo
+    kubevirt_network_mode: port-forward
+    kubevirt_ssh_key: ~/.ssh/id_rsa.pub
+    kubevirt_cpus: 2
+    kubevirt_memory: 4Gi
 CONFIG:
   # Global KubeVirt configuration
   kubeconfig: ~/.kube/config
@@ -135,6 +159,19 @@ describe 'basic functionality' do
   end
 end
 ```
+
+## Labels and Cleanup
+
+All resources created are labeled for traceability and cleanup:
+- `beaker/test-group`: Identifies the run (e.g., `beaker-<hex>`)
+- `beaker/host`: Host name from your Beaker inventory
+
+These labels are used during `cleanup` to remove VMs, secrets, and services associated with the test group.
+
+## Requirements
+
+- KubeVirt and Kubernetes cluster access via `kubeconfig`
+- For `port-forward` networking mode: `kubectl` access to the cluster nodes and permission to port-forward
 
 ## Development
 

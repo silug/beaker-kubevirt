@@ -64,15 +64,14 @@ HOSTS:
   centos-vm:
     platform: el-8-x86_64
     hypervisor: kubevirt
-    kubeconfig: ~/.kube/config
-    namespace: beaker-tests
-    vm_image: quay.io/kubevirt/centos-stream8-container-disk-demo
-    network_mode: port-forward
-    ssh_key: ~/.ssh/id_rsa.pub
-    cpu: 2
-    memory: 4Gi
-
+    kubevirt_vm_image: docker://quay.io/kubevirt/centos-stream8-container-disk-demo
+    kubevirt_network_mode: port-forward
+    kubevirt_ssh_key: ~/.ssh/id_rsa.pub
+    kubevirt_cpus: 2
+    kubevirt_memory: 4Gi
 CONFIG:
+  kubeconfig: <%= ENV.fetch('KUBECONFIG', '~/.kube/config') %>
+  namespace: beaker-tests
   ssh:
     auth_methods: ['publickey']
 ```

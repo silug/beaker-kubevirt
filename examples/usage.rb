@@ -12,20 +12,20 @@ hosts_config = {
     'centos-vm' => {
       'platform' => 'el-8-x86_64',
       'hypervisor' => 'kubevirt',
-      'vm_image' => 'quay.io/kubevirt/centos-stream8-container-disk-demo',
-      'network_mode' => 'port-forward',
-      'ssh_key' => '~/.ssh/id_rsa.pub',
-      'cpu' => 2,
-      'memory' => '4Gi',
+      'kubevirt_vm_image' => 'docker://quay.io/kubevirt/centos-stream8-container-disk-demo',
+      'kubevirt_network_mode' => 'port-forward',
+      'kubevirt_ssh_key' => '~/.ssh/id_rsa.pub',
+      'kubevirt_cpus' => 2,
+      'kubevirt_memory' => '4Gi',
     },
     'ubuntu-vm' => {
       'platform' => 'ubuntu-20.04-x86_64',
       'hypervisor' => 'kubevirt',
-      'vm_image' => 'pvc:ubuntu-20-04-disk',
-      'network_mode' => 'nodeport',
-      'ssh_key' => '~/.ssh/id_rsa.pub',
-      'cpu' => 1,
-      'memory' => '2Gi',
+      'kubevirt_vm_image' => 'pvc:ubuntu-20-04-disk',
+      'kubevirt_network_mode' => 'nodeport',
+      'kubevirt_ssh_key' => '~/.ssh/other_key.pub',
+      'kubevirt_cpus' => 1,
+      'kubevirt_memory' => '2Gi',
     },
   },
   'CONFIG' => {
@@ -48,9 +48,9 @@ if $PROGRAM_NAME == __FILE__
     logger: Logger.new($stdout),
     kubeconfig: ENV['KUBECONFIG'] || File.expand_path('~/.kube/config'),
     namespace: 'beaker-tests',
-    vm_image: 'quay.io/kubevirt/fedora-cloud-container-disk-demo',
-    network_mode: 'port-forward',
-    ssh_key: File.expand_path('~/.ssh/id_rsa.pub'),
+    kubevirt_vm_image: 'docker://quay.io/kubevirt/fedora-cloud-container-disk-demo',
+    kubevirt_network_mode: 'port-forward',
+    kubevirt_ssh_key: File.expand_path('~/.ssh/id_rsa.pub'),
   }
 
   hosts = [
