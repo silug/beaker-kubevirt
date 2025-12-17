@@ -93,7 +93,7 @@ Notes:
 The `kubevirt_vm_image` option supports several formats:
 
 - **Container image**: `docker://quay.io/kubevirt/fedora-cloud-container-disk-demo` or `oci://quay.io/kubevirt/fedora-cloud-container-disk-demo`
-- **PVC reference**: `pvc:my-vm-disk` or just `my-vm-disk`
+- **PVC reference**: `pvc:my-vm-disk`, `my-vm-disk` (uses current namespace), or `namespace/pvc-name` (cross-namespace PVC)
 - **DataVolume**: `http://example.com/my-datavolume.img` or `https://example.com/my-datavolume.img` NOTE: [KubeVirt CDI](https://github.com/kubevirt/containerized-data-importer) must be installed in the cluster for DataVolume support.
 
 ### Network Modes

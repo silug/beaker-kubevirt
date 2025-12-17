@@ -29,6 +29,20 @@ HOSTS:
       auth_methods:
         - publickey
 
+  debian-12-kubevirt:
+    platform: debian-12-x86_64
+    hypervisor: kubevirt
+    # Use a PVC from a different namespace
+    kubevirt_vm_image: images/debian-12-cloud-image
+    kubevirt_network_mode: port-forward
+    kubevirt_ssh_key: ~/.ssh/id_rsa.pub
+    kubevirt_cpus: 1
+    kubevirt_memory: 2Gi
+    user: debian
+    ssh:
+      auth_methods:
+        - publickey
+
   fedora-35-kubevirt:
     platform: fedora-35-x86_64
     hypervisor: kubevirt

@@ -145,8 +145,10 @@ module Beaker
       elsif vm_image && !vm_image.start_with?('docker://', 'oci://')
         # For PVC sources, we also need to clone to avoid sharing the same disk
         source_pvc = vm_image.sub(%r{^pvc://}, '')
-        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc}")
         host['source_pvc'] = source_pvc
+        _, source_pvc = source_pvc.split('/', 2) if source_pvc.include?('/')
+        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc}")
+
       end
 
       cloud_init_data = generate_cloud_init(host)
@@ -195,8 +197,7 @@ module Beaker
     # @return [String] The generated VM name
     def generate_vm_name(host)
       host_name = host.respond_to?(:name) ? host.name : host['name']
-      base_name = host_name.gsub(/[^a-z0-9-]/, '-').downcase
-      "#{@test_group_identifier}-#{base_name}"
+      sanitize_k8s_name("#{@test_group_identifier}-#{host_name}")
     end
 
     ##
@@ -487,6 +488,7 @@ module Beaker
         'metadata' => {
           'name' => dv_name,
           'labels' => get_labels(host),
+          'namespace' => @namespace,
         },
         'spec' => {
           'storage' => {
@@ -520,11 +522,14 @@ module Beaker
           },
         }
       elsif host['source_pvc']
+        name = host['source_pvc']
+        namespace = @namespace
+        namespace, name = host['source_pvc'].split('/', 2) if host['source_pvc'].include?('/')
         # Clone from source PVC
         dv_spec['spec']['source'] = {
           'pvc' => {
-            'namespace' => @namespace,
-            'name' => host['source_pvc'],
+            'namespace' => namespace,
+            'name' => name,
           },
         }
       end

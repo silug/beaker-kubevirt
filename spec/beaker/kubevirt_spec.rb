@@ -6,7 +6,7 @@ RSpec.describe Beaker::Kubevirt do
       logger: instance_double(Logger).as_null_object,
       kubeconfig: '/tmp/kubeconfig',
       namespace: 'beaker-test',
-      kubevirt_vm_image: 'quay.io/kubevirt/fedora-cloud-container-disk-demo',
+      kubevirt_vm_image: 'docker://quay.io/kubevirt/fedora-cloud-container-disk-demo',
       kubevirt_ssh_key: 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQ...',
     }
   end
@@ -547,6 +547,937 @@ RSpec.describe Beaker::Kubevirt do
 
     it 'handles names that do not start with a letter' do
       expect(hypervisor.send(:sanitize_k8s_name, '1invalid-name')).to eq('x1invalid-name')
+    end
+  end
+
+  describe '#generate_root_volume_dvtemplate' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+    let(:vm_name) { 'test-vm-123' }
+    let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+    context 'when host has no dv_name' do
+      it 'returns nil' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, 'http://example.com/image.qcow2', host)
+        expect(result).to be_nil
+      end
+    end
+
+    context 'with HTTP URL source' do
+      let(:vm_image) { 'http://example.com/my-image.qcow2' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-my-image-dv",
+        }
+      end
+
+      it 'creates a DataVolume with HTTP source' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        expect(result).to be_an(Array)
+        expect(result.length).to eq(1)
+        dv = result[0]
+        expect(dv['spec']['source']['http']['url']).to eq(vm_image)
+      end
+
+      it 'includes metadata with name and labels' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['metadata']['name']).to eq("#{vm_name}-my-image-dv")
+        expect(dv['metadata']['namespace']).to eq('beaker-test')
+        expect(dv['metadata']['labels']).to include('beaker/test-group', 'beaker/host')
+      end
+
+      it 'sets storage access mode to ReadWriteOnce' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['accessModes']).to eq(['ReadWriteOnce'])
+      end
+
+      it 'sets default storage size of 10Gi for HTTP sources' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['resources']['requests']['storage']).to eq('10Gi')
+      end
+
+      it 'respects explicit disk_size when provided' do
+        host['disk_size'] = '20Gi'
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['resources']['requests']['storage']).to eq('20Gi')
+      end
+    end
+
+    context 'with HTTPS URL source' do
+      let(:vm_image) { 'https://example.com/secure-image.qcow2' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-secure-image-dv",
+        }
+      end
+
+      it 'creates a DataVolume with HTTPS source' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['source']['http']['url']).to eq(vm_image)
+      end
+
+      it 'sets default storage size of 10Gi for HTTPS sources' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['resources']['requests']['storage']).to eq('10Gi')
+      end
+    end
+
+    context 'with PVC source' do
+      let(:vm_image) { 'my-source-pvc' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-my-source-pvc",
+          'source_pvc' => 'my-source-pvc',
+        }
+      end
+
+      it 'creates a DataVolume with PVC source' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['source']['pvc']['name']).to eq('my-source-pvc')
+        expect(dv['spec']['source']['pvc']['namespace']).to eq('beaker-test')
+      end
+
+      it 'omits storage size to inherit from source PVC' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['resources']).to be_nil
+      end
+
+      it 'respects explicit disk_size for PVC sources' do
+        host['disk_size'] = '15Gi'
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['resources']['requests']['storage']).to eq('15Gi')
+      end
+    end
+
+    context 'with PVC source in different namespace' do
+      let(:vm_image) { 'other-namespace/source-pvc' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-source-pvc",
+          'source_pvc' => 'other-namespace/source-pvc',
+        }
+      end
+
+      it 'parses namespace and PVC name correctly' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['source']['pvc']['namespace']).to eq('other-namespace')
+        expect(dv['spec']['source']['pvc']['name']).to eq('source-pvc')
+      end
+    end
+
+    context 'when explicit disk_size is provided' do
+      let(:vm_image) { 'http://example.com/image.qcow2' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-image-dv",
+          'disk_size' => '25Gi',
+        }
+      end
+
+      it 'uses explicit disk_size over default' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['resources']['requests']['storage']).to eq('25Gi')
+      end
+    end
+
+    context 'with DataVolume metadata' do
+      let(:vm_image) { 'http://example.com/image.qcow2' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-image-dv",
+        }
+      end
+
+      it 'includes correct apiVersion' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['metadata']['name']).not_to be_nil
+        expect(dv['metadata']['namespace']).to eq('beaker-test')
+      end
+
+      it 'includes beaker labels' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        labels = dv['metadata']['labels']
+        expect(labels['beaker/host']).to eq('test-host')
+        expect(labels).to have_key('beaker/test-group')
+      end
+    end
+
+    context 'with storage configuration' do
+      let(:vm_image) { 'http://example.com/image.qcow2' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-image-dv",
+        }
+      end
+
+      it 'sets ReadWriteOnce access mode to prevent live migration' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['accessModes']).to eq(['ReadWriteOnce'])
+      end
+
+      it 'includes storage size in requests' do
+        result = hypervisor.send(:generate_root_volume_dvtemplate, vm_image, host)
+        dv = result[0]
+        expect(dv['spec']['storage']['resources']['requests']).to have_key('storage')
+      end
+    end
+  end
+
+  describe '#generate_root_volume_spec' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+    let(:vm_name) { 'test-vm-123' }
+    let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+    context 'with container disk image (docker://)' do
+      let(:vm_image) { 'docker://quay.io/kubevirt/fedora-cloud-container-disk-demo' }
+
+      it 'creates a containerDisk volume spec' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).to have_key('containerDisk')
+        expect(result).to have_key('name')
+        expect(result['name']).to eq('rootdisk')
+      end
+
+      it 'strips the docker:// protocol prefix from image' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['containerDisk']['image']).to eq('quay.io/kubevirt/fedora-cloud-container-disk-demo')
+      end
+
+      it 'preserves full image reference with registry and tag' do
+        image_with_tag = 'docker://registry.example.com:5000/my-image:v1.0'
+        result = hypervisor.send(:generate_root_volume_spec, image_with_tag, host)
+        expect(result['containerDisk']['image']).to eq('registry.example.com:5000/my-image:v1.0')
+      end
+
+      it 'does not include dataVolume key' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).not_to have_key('dataVolume')
+      end
+
+      it 'does not include persistentVolumeClaim key' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).not_to have_key('persistentVolumeClaim')
+      end
+    end
+
+    context 'with container disk image (oci://)' do
+      let(:vm_image) { 'oci://registry.example.com/my-image:latest' }
+
+      it 'creates a containerDisk volume spec' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).to have_key('containerDisk')
+        expect(result['name']).to eq('rootdisk')
+      end
+
+      it 'strips the oci:// protocol prefix from image' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['containerDisk']['image']).to eq('registry.example.com/my-image:latest')
+      end
+    end
+
+    context 'with DataVolume (HTTP/HTTPS source)' do
+      let(:vm_image) { 'http://example.com/image.qcow2' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-image-dv",
+        }
+      end
+
+      it 'creates a dataVolume volume spec' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).to have_key('dataVolume')
+        expect(result['name']).to eq('rootdisk')
+      end
+
+      it 'references the correct DataVolume name' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['dataVolume']['name']).to eq("#{vm_name}-image-dv")
+      end
+
+      it 'does not include containerDisk key' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).not_to have_key('containerDisk')
+      end
+
+      it 'does not include persistentVolumeClaim key' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).not_to have_key('persistentVolumeClaim')
+      end
+    end
+
+    context 'with DataVolume (HTTPS source)' do
+      let(:vm_image) { 'https://secure.example.com/image.qcow2' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-image-dv",
+        }
+      end
+
+      it 'creates a dataVolume volume spec' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).to have_key('dataVolume')
+      end
+
+      it 'references the correct DataVolume name' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['dataVolume']['name']).to eq("#{vm_name}-image-dv")
+      end
+    end
+
+    context 'with DataVolume (PVC source)' do
+      let(:vm_image) { 'my-source-pvc' }
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => "#{vm_name}-my-source-pvc",
+          'source_pvc' => 'my-source-pvc',
+        }
+      end
+
+      it 'creates a dataVolume volume spec' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).to have_key('dataVolume')
+        expect(result['name']).to eq('rootdisk')
+      end
+
+      it 'references the correct DataVolume name' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['dataVolume']['name']).to eq("#{vm_name}-my-source-pvc")
+      end
+    end
+
+    context 'with PVC fallback (direct reference)' do
+      let(:vm_image) { 'my-pvc' }
+      let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+      it 'creates a persistentVolumeClaim volume spec' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).to have_key('persistentVolumeClaim')
+        expect(result['name']).to eq('rootdisk')
+      end
+
+      it 'references the PVC by name' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['persistentVolumeClaim']['claimName']).to eq('my-pvc')
+      end
+
+      it 'does not include dataVolume key' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).not_to have_key('dataVolume')
+      end
+
+      it 'does not include containerDisk key' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).not_to have_key('containerDisk')
+      end
+    end
+
+    context 'with PVC fallback with pvc:// prefix' do
+      let(:vm_image) { 'pvc://my-pvc' }
+      let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+      it 'strips pvc:// prefix and references the PVC' do
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['persistentVolumeClaim']['claimName']).to eq('my-pvc')
+      end
+    end
+
+    context 'when setting volume spec name' do
+      it 'always sets name to rootdisk for container disk' do
+        vm_image = 'docker://example.com/image'
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['name']).to eq('rootdisk')
+      end
+
+      it 'always sets name to rootdisk for PVC' do
+        vm_image = 'my-pvc'
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result['name']).to eq('rootdisk')
+      end
+    end
+
+    context 'when prioritizing volume sources' do
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'platform' => 'el-8-x86_64',
+          'dv_name' => 'test-dv',
+          'source_pvc' => 'test-pvc',
+        }
+      end
+
+      it 'prioritizes dv_name (DataVolume) when present' do
+        vm_image = 'http://example.com/image.qcow2'
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host)
+        expect(result).to have_key('dataVolume')
+        expect(result).not_to have_key('persistentVolumeClaim')
+      end
+
+      it 'uses container disk when dv_name not set but image is docker://' do
+        host_no_dv = host.merge('dv_name' => nil)
+        vm_image = 'docker://example.com/image'
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host_no_dv)
+        expect(result).to have_key('containerDisk')
+        expect(result).not_to have_key('dataVolume')
+      end
+
+      it 'falls back to PVC when no dv_name and not container image' do
+        host_no_dv = host.merge('dv_name' => nil)
+        vm_image = 'my-pvc'
+        result = hypervisor.send(:generate_root_volume_spec, vm_image, host_no_dv)
+        expect(result).to have_key('persistentVolumeClaim')
+        expect(result).not_to have_key('dataVolume')
+      end
+    end
+  end
+
+  describe '#create_vm' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+    let(:host) do
+      {
+        'name' => 'test-host',
+        'platform' => 'el-8-x86_64',
+      }
+    end
+
+    before do
+      # Mock the host to respond to .name for the logger call
+      def host.name
+        self['name']
+      end
+      allow(hypervisor).to receive_messages(
+        generate_vm_name: 'beaker-abc123-test-host',
+        generate_cloud_init: '#cloud-config\nhostname: test',
+        create_cloud_init_secret: 'secret-name',
+        generate_vm_spec: {},
+      )
+      allow(kubevirt_helper).to receive(:create_vm)
+    end
+
+    context 'with HTTP image source' do
+      let(:vm_image) { 'http://example.com/fedora-disk.qcow2' }
+
+      before do
+        options[:kubevirt_vm_image] = vm_image
+      end
+
+      it 'sets dv_name for HTTP URL sources' do
+        hypervisor.send(:create_vm, host)
+        expect(host['dv_name']).to match(/^beaker-abc123-test-host-fedora-disk-qcow2-dv$/)
+      end
+
+      it 'does not set source_pvc for HTTP sources' do
+        hypervisor.send(:create_vm, host)
+        expect(host).not_to have_key('source_pvc')
+      end
+    end
+
+    context 'with HTTPS image source' do
+      let(:vm_image) { 'https://example.com/ubuntu-disk.img' }
+
+      before do
+        options[:kubevirt_vm_image] = vm_image
+      end
+
+      it 'sets dv_name for HTTPS URL sources' do
+        hypervisor.send(:create_vm, host)
+        expect(host['dv_name']).to match(/ubuntu-disk-img-dv$/)
+      end
+    end
+
+    context 'with PVC source' do
+      let(:vm_image) { 'my-pvc' }
+
+      before do
+        options[:kubevirt_vm_image] = vm_image
+      end
+
+      it 'sets dv_name for PVC sources' do
+        hypervisor.send(:create_vm, host)
+        expect(host['dv_name']).to match(/my-pvc$/)
+      end
+
+      it 'sets source_pvc for PVC sources' do
+        hypervisor.send(:create_vm, host)
+        expect(host['source_pvc']).to eq('my-pvc')
+      end
+
+      it 'extracts namespace from cross-namespace PVC reference' do
+        options[:kubevirt_vm_image] = 'images/ubuntu-disk'
+        hypervisor.send(:create_vm, host)
+        expect(host['source_pvc']).to eq('images/ubuntu-disk')
+      end
+    end
+
+    context 'with docker:// container image' do
+      let(:vm_image) { 'docker://quay.io/kubevirt/fedora-cloud-container-disk-demo' }
+
+      before do
+        options[:kubevirt_vm_image] = vm_image
+      end
+
+      it 'does not set dv_name for container images' do
+        hypervisor.send(:create_vm, host)
+        expect(host).not_to have_key('dv_name')
+      end
+
+      it 'does not set source_pvc for container images' do
+        hypervisor.send(:create_vm, host)
+        expect(host).not_to have_key('source_pvc')
+      end
+    end
+
+    context 'with oci:// container image' do
+      let(:vm_image) { 'oci://quay.io/kubevirt/fedora-cloud-container-disk-demo' }
+
+      before do
+        options[:kubevirt_vm_image] = vm_image
+      end
+
+      it 'does not set dv_name for OCI images' do
+        hypervisor.send(:create_vm, host)
+        expect(host).not_to have_key('dv_name')
+      end
+    end
+
+    context 'when vm_name is set' do
+      it 'sets vm_name on host' do
+        hypervisor.send(:create_vm, host)
+        expect(host['vm_name']).to eq('beaker-abc123-test-host')
+      end
+    end
+
+    context 'when cloud-init is generated' do
+      it 'calls generate_cloud_init' do
+        hypervisor.send(:create_vm, host)
+        expect(hypervisor).to have_received(:generate_cloud_init).with(host)
+      end
+
+      it 'creates cloud-init secret with generated data' do
+        hypervisor.send(:create_vm, host)
+        expect(hypervisor).to have_received(:create_cloud_init_secret).with(host, '#cloud-config\nhostname: test')
+      end
+    end
+
+    context 'when creating VM spec' do
+      it 'calls generate_vm_spec with vm_name and secret_name' do
+        hypervisor.send(:create_vm, host)
+        expect(hypervisor).to have_received(:generate_vm_spec).with(host, 'beaker-abc123-test-host', 'secret-name')
+      end
+
+      it 'calls kubevirt_helper.create_vm with the spec' do
+        hypervisor.send(:create_vm, host)
+        expect(kubevirt_helper).to have_received(:create_vm).with({})
+      end
+    end
+  end
+
+  describe '#generate_vm_name' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    context 'with standard host name' do
+      let(:host) { { 'name' => 'test-host' } }
+
+      it 'includes test group identifier' do
+        result = hypervisor.send(:generate_vm_name, host)
+        expect(result).to match(/^beaker-[a-f0-9]{8}-/)
+      end
+
+      it 'includes host name' do
+        result = hypervisor.send(:generate_vm_name, host)
+        expect(result).to end_with('-test-host')
+      end
+
+      it 'converts to lowercase' do
+        host_upper = { 'name' => 'TEST-HOST' }
+        result = hypervisor.send(:generate_vm_name, host_upper)
+        expect(result).to include('test-host')
+      end
+    end
+
+    context 'with special characters in host name' do
+      let(:host) { { 'name' => 'test@host!#$' } }
+
+      it 'replaces special characters with hyphens' do
+        result = hypervisor.send(:generate_vm_name, host)
+        expect(result).to match(/^beaker-[a-f0-9]{8}-test-host/)
+      end
+    end
+
+    context 'when host is an object with name method' do
+      it 'calls name method on host object' do
+        host_obj = double(name: 'object-host')
+        result = hypervisor.send(:generate_vm_name, host_obj)
+        expect(result).to include('object-host')
+      end
+    end
+  end
+
+  describe '#get_labels' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+    let(:host) { { 'name' => 'test-host' } }
+
+    it 'includes beaker/test-group label' do
+      result = hypervisor.send(:get_labels, host)
+      expect(result['beaker/test-group']).to match(/^beaker-[a-f0-9]{8}$/)
+    end
+
+    it 'includes beaker/host label with host name' do
+      result = hypervisor.send(:get_labels, host)
+      expect(result['beaker/host']).to eq('test-host')
+    end
+
+    it 'uses host name from name method when available' do
+      host_obj = double(name: 'object-host')
+      result = hypervisor.send(:get_labels, host_obj)
+      expect(result['beaker/host']).to eq('object-host')
+    end
+
+    it 'returns hash with exactly 2 labels' do
+      result = hypervisor.send(:get_labels, host)
+      expect(result.size).to eq(2)
+    end
+
+    context 'when test group is consistent' do
+      it 'uses the same test group for multiple hosts' do
+        host1 = { 'name' => 'host1' }
+        host2 = { 'name' => 'host2' }
+        labels1 = hypervisor.send(:get_labels, host1)
+        labels2 = hypervisor.send(:get_labels, host2)
+        expect(labels1['beaker/test-group']).to eq(labels2['beaker/test-group'])
+      end
+    end
+  end
+
+  describe '#disk_bus' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    context 'with virtio enabled (default)' do
+      let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+      it 'returns virtio bus type' do
+        result = hypervisor.send(:disk_bus, host)
+        expect(result).to eq('virtio')
+      end
+    end
+
+    context 'with virtio disabled' do
+      let(:host) { { 'name' => 'test-host', 'platform' => 'windows-2019', 'kubevirt_disable_virtio' => true } }
+
+      it 'returns sata bus type' do
+        result = hypervisor.send(:disk_bus, host)
+        expect(result).to eq('sata')
+      end
+    end
+
+    context 'with explicit false for disable_virtio' do
+      let(:host) { { 'name' => 'test-host', 'kubevirt_disable_virtio' => false } }
+
+      it 'returns virtio bus type' do
+        result = hypervisor.send(:disk_bus, host)
+        expect(result).to eq('virtio')
+      end
+    end
+
+    context 'when disable_virtio is not set' do
+      let(:host) { { 'name' => 'test-host' } }
+
+      it 'defaults to virtio' do
+        result = hypervisor.send(:disk_bus, host)
+        expect(result).to eq('virtio')
+      end
+    end
+  end
+
+  describe '#eth_model' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    context 'with virtio enabled (default)' do
+      let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+      it 'returns virtio network model' do
+        result = hypervisor.send(:eth_model, host)
+        expect(result).to eq('virtio')
+      end
+    end
+
+    context 'with virtio disabled' do
+      let(:host) { { 'name' => 'test-host', 'platform' => 'windows-2019', 'kubevirt_disable_virtio' => true } }
+
+      it 'returns e1000 network model' do
+        result = hypervisor.send(:eth_model, host)
+        expect(result).to eq('e1000')
+      end
+    end
+
+    context 'with explicit false for disable_virtio' do
+      let(:host) { { 'name' => 'test-host', 'kubevirt_disable_virtio' => false } }
+
+      it 'returns virtio network model' do
+        result = hypervisor.send(:eth_model, host)
+        expect(result).to eq('virtio')
+      end
+    end
+
+    context 'when disable_virtio is not set' do
+      let(:host) { { 'name' => 'test-host' } }
+
+      it 'defaults to virtio' do
+        result = hypervisor.send(:eth_model, host)
+        expect(result).to eq('virtio')
+      end
+    end
+  end
+
+  describe '#generate_hardware_spec' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+    let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+    context 'with virtio enabled' do
+      it 'includes root disk with virtio bus' do
+        result = hypervisor.send(:generate_hardware_spec, host)
+        expect(result['disks'][0]['disk']['bus']).to eq('virtio')
+      end
+
+      it 'includes cloud-init disk with sata bus' do
+        result = hypervisor.send(:generate_hardware_spec, host)
+        expect(result['disks'][1]['disk']['bus']).to eq('sata')
+      end
+
+      it 'includes network interface with virtio model' do
+        result = hypervisor.send(:generate_hardware_spec, host)
+        expect(result['interfaces'][0]['model']).to eq('virtio')
+      end
+    end
+
+    context 'with virtio disabled' do
+      let(:host) { { 'name' => 'test-host', 'platform' => 'windows-2019', 'kubevirt_disable_virtio' => true } }
+
+      it 'includes root disk with sata bus' do
+        result = hypervisor.send(:generate_hardware_spec, host)
+        expect(result['disks'][0]['disk']['bus']).to eq('sata')
+      end
+
+      it 'includes network interface with e1000 model' do
+        result = hypervisor.send(:generate_hardware_spec, host)
+        expect(result['interfaces'][0]['model']).to eq('e1000')
+      end
+    end
+
+    context 'with proper structure' do
+      let(:result) { hypervisor.send(:generate_hardware_spec, host) }
+
+      it 'includes disks array' do
+        expect(result).to have_key('disks')
+        expect(result['disks']).to be_an(Array)
+      end
+
+      it 'includes interfaces array' do
+        expect(result).to have_key('interfaces')
+        expect(result['interfaces']).to be_an(Array)
+      end
+
+      it 'includes inputs array' do
+        expect(result).to have_key('inputs')
+        expect(result['inputs']).to be_an(Array)
+      end
+
+      it 'includes exactly 2 disks' do
+        expect(result['disks'].size).to eq(2)
+      end
+
+      it 'includes exactly 1 network interface' do
+        expect(result['interfaces'].size).to eq(1)
+      end
+
+      it 'includes exactly 1 input device (tablet)' do
+        expect(result['inputs'].size).to eq(1)
+      end
+
+      it 'root disk is named rootdisk' do
+        expect(result['disks'][0]['name']).to eq('rootdisk')
+      end
+
+      it 'cloud-init disk is named cidata' do
+        expect(result['disks'][1]['name']).to eq('cidata')
+      end
+
+      it 'network interface is named default' do
+        expect(result['interfaces'][0]['name']).to eq('default')
+      end
+
+      it 'tablet input has correct properties' do
+        tablet = result['inputs'][0]
+        expect(tablet['bus']).to eq('usb')
+        expect(tablet['type']).to eq('tablet')
+        expect(tablet['name']).to eq('tablet')
+      end
+    end
+  end
+
+  describe '#generate_networks_spec' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    context 'with default network mode (port-forward)' do
+      let(:host) { { 'name' => 'test-host', 'platform' => 'el-8-x86_64' } }
+
+      it 'returns default pod network' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result).to eq([{ 'name' => 'default', 'pod' => {} }])
+      end
+    end
+
+    context 'with explicit port-forward network mode' do
+      let(:host) { { 'name' => 'test-host', 'kubevirt_network_mode' => 'port-forward' } }
+
+      it 'returns default pod network' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result).to eq([{ 'name' => 'default', 'pod' => {} }])
+      end
+    end
+
+    context 'with nodeport network mode' do
+      let(:host) { { 'name' => 'test-host', 'kubevirt_network_mode' => 'nodeport' } }
+
+      it 'returns default pod network' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result).to eq([{ 'name' => 'default', 'pod' => {} }])
+      end
+    end
+
+    context 'with multus network mode and single network' do
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'kubevirt_network_mode' => 'multus',
+          'networks' => [
+            {
+              'name' => 'ext0',
+              'multus_network_name' => 'my-bridge-network',
+            },
+          ],
+        }
+      end
+
+      it 'returns multus network configuration' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result.size).to eq(1)
+        expect(result[0]['name']).to eq('ext0')
+        expect(result[0]['multus']['networkName']).to eq('my-bridge-network')
+      end
+
+      it 'does not include pod network' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result[0]).not_to have_key('pod')
+      end
+    end
+
+    context 'with multus network mode and multiple networks' do
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'kubevirt_network_mode' => 'multus',
+          'networks' => [
+            {
+              'name' => 'ext0',
+              'multus_network_name' => 'my-bridge-network',
+            },
+            {
+              'name' => 'ext1',
+              'multus_network_name' => 'another-network',
+            },
+          ],
+        }
+      end
+
+      it 'returns all multus networks' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result.size).to eq(2)
+      end
+
+      it 'maps all network configurations correctly' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result[0]['name']).to eq('ext0')
+        expect(result[0]['multus']['networkName']).to eq('my-bridge-network')
+        expect(result[1]['name']).to eq('ext1')
+        expect(result[1]['multus']['networkName']).to eq('another-network')
+      end
+    end
+
+    context 'with multus network mode and no networks array' do
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'kubevirt_network_mode' => 'multus',
+        }
+      end
+
+      it 'returns empty array' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result).to eq([])
+      end
+    end
+
+    context 'with proper network structure' do
+      let(:host) do
+        {
+          'name' => 'test-host',
+          'kubevirt_network_mode' => 'multus',
+          'networks' => [
+            {
+              'name' => 'ext0',
+              'multus_network_name' => 'test-network',
+            },
+          ],
+        }
+      end
+
+      it 'includes network name' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result[0]).to have_key('name')
+      end
+
+      it 'includes multus configuration' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result[0]).to have_key('multus')
+      end
+
+      it 'multus has networkName key' do
+        result = hypervisor.send(:generate_networks_spec, host)
+        expect(result[0]['multus']).to have_key('networkName')
+      end
     end
   end
 end
