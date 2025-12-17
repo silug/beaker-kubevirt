@@ -47,14 +47,14 @@ module Beaker
     # @option options [String] :kubeconfig Path to kubeconfig file
     # @option options [String] :kubecontext Kubernetes context to use (optional)
     # @option options [String] :namespace Kubernetes namespace for VMs (required)
-    # @option options [String] :vm_image Base VM image (PVC, container image, etc.)
-    # @option options [String] :network_mode Network mode (port-forward, nodeport, multus)
-    # @option options [String] :ssh_key SSH public key to inject
-    # @option options [String] :cpu CPU resources for VM
-    # @option options [String] :memory Memory resources for VM
-    # @option options [Integer] :vm_ssh_port Port that SSH runs on inside the VM (default: 22)
+    # @option options [String] :kubevirt_vm_image Base VM image (PVC, container image, etc.)
+    # @option options [String] :kubevirt_network_mode Network mode (port-forward, nodeport, multus)
+    # @option options [String] :kubevirt_ssh_key SSH public key to inject
+    # @option options [String] :kubevirt_cpus CPU resources for VM
+    # @option options [String] :kubevirt_memory Memory resources for VM
+    # @option options [Integer] :kubevirt_vm_ssh_port Port that SSH runs on inside the VM (default: 22)
     # @option options [Integer] :timeout Timeout for operations
-    # @option options [Boolean] :disable_virtio Disable virtio devices (for compatibility with Windows)
+    # @option options [Boolean] :kubevirt_disable_virtio Disable virtio devices (for compatibility with Windows)
     def initialize(kubevirt_hosts, options)
       require 'beaker/hypervisor/kubevirt_helper'
 
@@ -137,7 +137,7 @@ module Beaker
       host['vm_name'] = vm_name
 
       # Generate DataVolume name if applicable and store it for consistency
-      vm_image = host['vm_image'] || @options[:vm_image]
+      vm_image = host['kubevirt_vm_image'] || @options[:kubevirt_vm_image]
       if vm_image&.start_with?('http://', 'https://')
         base_name = vm_image.split('/').last
         # Create a unique datavolume name by including the VM name in it
@@ -252,10 +252,10 @@ module Beaker
     # Find SSH key pair (public and private keys)
     # @return [Hash] Hash with :public_key (content) and :private_key_path
     def find_ssh_key_pair
-      if @options[:ssh_key]
-        # If ssh_key is specified, it could be a public key path/content
-        if File.exist?(@options[:ssh_key])
-          pub_key_path = @options[:ssh_key]
+      if @options[:kubevirt_ssh_key]
+        # If kubevirt_ssh_key is specified, it could be a public key path/content
+        if File.exist?(@options[:kubevirt_ssh_key])
+          pub_key_path = @options[:kubevirt_ssh_key]
           pub_key_content = File.read(pub_key_path).strip
 
           # Try to find matching private key
@@ -269,7 +269,7 @@ module Beaker
           # It's the public key content directly
           # In this case, we can't determine the private key, so use default
           @logger.warn('SSH public key provided as content, cannot determine private key path. Using default.')
-          { public_key: @options[:ssh_key].strip, private_key_path: nil }
+          { public_key: @options[:kubevirt_ssh_key].strip, private_key_path: nil }
         end
       else
         # Try common key types in order of preference
@@ -305,7 +305,7 @@ module Beaker
 
     def disk_bus(host)
       # Determine the disk bus type based on host configuration
-      if host['disable_virtio']
+      if host['kubevirt_disable_virtio']
         'sata'
       else
         'virtio'
@@ -314,7 +314,7 @@ module Beaker
 
     def eth_model(host)
       # Determine the network model based on host configuration
-      if host['disable_virtio']
+      if host['kubevirt_disable_virtio']
         'e1000'
       else
         'virtio'
@@ -363,15 +363,19 @@ module Beaker
     # @param [String] cloud_init_secret Base64 encoded cloud-init data
     # @return [Hash] VM specification
     def generate_vm_spec(host, vm_name, cloud_init_secret)
-      cpu = host['cpu'] || @options[:cpu] || '1'
-      memory = host['memory'] || @options[:memory] || '2Gi'
+      cpu = host['kubevirt_cpus'] || @options[:kubevirt_cpus] || '1'
+      memory = host['kubevirt_memory'] || @options[:kubevirt_memory] || '2Gi'
       # If the memory is a plain number, assume MiB
       memory = "#{memory}Mi" if /^\d+$/.match?(memory)
-      vm_image = host['vm_image'] || @options[:vm_image]
+      vm_image = host['kubevirt_vm_image'] || @options[:kubevirt_vm_image]
       # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
-      raise 'vm_image must be specified' unless vm_image
+      unless vm_image
+        raise ArgumentError,
+              "kubevirt_vm_image must be specified for host '#{host_name}' " \
+              '(set in host configuration or global options)'
+      end
 
       {
         'apiVersion' => 'kubevirt.io/v1',
@@ -449,7 +453,7 @@ module Beaker
     # @param [Host] host The host configuration
     # @return [Array] Networks specification
     def generate_networks_spec(host)
-      if host['network_mode'] == 'multus'
+      if host['kubevirt_network_mode'] == 'multus'
         # Multus network configuration
         multus_networks = host['networks'] || []
         multus_networks.map do |net|
@@ -594,9 +598,9 @@ module Beaker
     # Setup networking for the VM
     # @param [Host] host The host to setup networking for
     def setup_networking(host)
-      network_mode = host['network_mode'] || 'port-forward'
+      network_mode = host['kubevirt_network_mode'] || 'port-forward'
       # Allow the VM SSH port to be configured per-host or use default
-      vm_ssh_port = host['vm_ssh_port'] || @options[:vm_ssh_port] || 22
+      vm_ssh_port = host['kubevirt_vm_ssh_port'] || @options[:kubevirt_vm_ssh_port] || 22
 
       case network_mode
       when 'port-forward'
@@ -635,7 +639,7 @@ module Beaker
       host['ssh'] = ssh_options
 
       @logger.debug("Setting up port-forward for VM #{vm_name} from localhost:#{local_port} to VM port #{host_port}")
-      @logger.info("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}, host['ssh'][:port]=#{host['ssh'][:port]}")
+      @logger.info("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}")
 
       # Setup port forwarding from local_port to host_port (22) on the VM
       host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, host_port, local_port)
@@ -716,7 +720,6 @@ module Beaker
         vmi = @kubevirt_helper.get_vmi(vm_name)
         interfaces = vmi.dig('status', 'interfaces')
 
-        # return iface['ipAddress'] if iface['ipAddress'] && iface['ipAddress'].empty? == false
         external_interface = interfaces.find { |iface| iface['name'] != 'default' }
         return external_interface['ipAddress'] if external_interface && external_interface['ipAddress']
 

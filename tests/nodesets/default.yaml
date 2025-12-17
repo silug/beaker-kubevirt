@@ -2,14 +2,14 @@ HOSTS:
   test-el-vm:
     platform: redhat-9-x86_64
     hypervisor: kubevirt
-    vm_image: https://repo.almalinux.org/almalinux/9.6/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.6-20250522.x86_64.qcow2
-    memory: 2Gi
-    cpu: 2
-    network_mode: port-forward
+    kubevirt_vm_image: https://repo.almalinux.org/almalinux/9.6/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.6-20250522.x86_64.qcow2
+    kubevirt_memory: 2Gi
+    kubevirt_cpus: 2
+    kubevirt_network_mode: multus
     networks:
       - name: multus-network
         multus_network_name: 'my-network'
-    disk_size: 21G
+    kubevirt_disk_size: 21G
 CONFIG:
   namespace: beaker-tests  # moved to global config
   log_level: debug

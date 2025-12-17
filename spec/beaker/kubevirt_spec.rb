@@ -6,8 +6,8 @@ RSpec.describe Beaker::Kubevirt do
       logger: instance_double(Logger).as_null_object,
       kubeconfig: '/tmp/kubeconfig',
       namespace: 'beaker-test',
-      vm_image: 'quay.io/kubevirt/fedora-cloud-container-disk-demo',
-      ssh_key: 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQ...',
+      kubevirt_vm_image: 'quay.io/kubevirt/fedora-cloud-container-disk-demo',
+      kubevirt_ssh_key: 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQ...',
     }
   end
 
@@ -369,25 +369,25 @@ RSpec.describe Beaker::Kubevirt do
 
     context 'when ssh_key is provided' do
       it 'returns the provided ssh key' do
-        expect(hypervisor.send(:find_ssh_public_key)).to eq(options[:ssh_key])
+        expect(hypervisor.send(:find_ssh_public_key)).to eq(options[:kubevirt_ssh_key])
       end
 
       it 'returns the contents of the file if it exists' do
-        allow(File).to receive(:exist?).with(options[:ssh_key]).and_return(true)
-        allow(File).to receive(:read).with(options[:ssh_key]).and_return('ssh-rsa test-key')
+        allow(File).to receive(:exist?).with(options[:kubevirt_ssh_key]).and_return(true)
+        allow(File).to receive(:read).with(options[:kubevirt_ssh_key]).and_return('ssh-rsa test-key')
 
         expect(hypervisor.send(:find_ssh_public_key)).to eq('ssh-rsa test-key')
       end
 
       it 'returns the provided content of the key when it does not exist' do
-        allow(File).to receive(:exist?).with(options[:ssh_key]).and_return(false)
+        allow(File).to receive(:exist?).with(options[:kubevirt_ssh_key]).and_return(false)
 
-        expect(hypervisor.send(:find_ssh_public_key)).to eq(options[:ssh_key])
+        expect(hypervisor.send(:find_ssh_public_key)).to eq(options[:kubevirt_ssh_key])
       end
     end
 
     context 'when the key is not found' do
-      let(:options) { super().dup.tap { |opts| opts.delete(:ssh_key) } }
+      let(:options) { super().dup.tap { |opts| opts.delete(:kubevirt_ssh_key) } }
 
       before do
         allow(File).to receive(:exist?).and_return(false)
@@ -399,7 +399,7 @@ RSpec.describe Beaker::Kubevirt do
     end
 
     context 'when the id_ecdsa key is found' do
-      let(:options) { super().dup.tap { |opts| opts.delete(:ssh_key) } }
+      let(:options) { super().dup.tap { |opts| opts.delete(:kubevirt_ssh_key) } }
 
       before do
         allow(File).to receive(:exist?).and_return(false)
@@ -421,7 +421,7 @@ RSpec.describe Beaker::Kubevirt do
 
     context 'when ssh_key is provided as a file path' do
       let(:options) do
-        super().merge(ssh_key: '/home/user/.ssh/id_test.pub')
+        super().merge(kubevirt_ssh_key: '/home/user/.ssh/id_test.pub')
       end
 
       it 'returns the public key content and matching private key path' do
@@ -446,7 +446,7 @@ RSpec.describe Beaker::Kubevirt do
 
     context 'when ssh_key is provided as content' do
       let(:options) do
-        super().merge(ssh_key: 'ssh-rsa direct-content')
+        super().merge(kubevirt_ssh_key: 'ssh-rsa direct-content')
       end
 
       it 'returns the public key content with nil private key path' do
@@ -460,7 +460,7 @@ RSpec.describe Beaker::Kubevirt do
     end
 
     context 'when searching for default keys' do
-      let(:options) { super().dup.tap { |opts| opts.delete(:ssh_key) } }
+      let(:options) { super().dup.tap { |opts| opts.delete(:kubevirt_ssh_key) } }
 
       it 'finds matching ed25519 key pair' do
         ed25519_path = File.join(Dir.home, '.ssh', 'id_ed25519')
