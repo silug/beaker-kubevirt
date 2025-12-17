@@ -371,7 +371,11 @@ module Beaker
       # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
-      raise 'kubevirt_vm_image must be specified' unless vm_image
+      unless vm_image
+        raise ArgumentError,
+              "kubevirt_vm_image must be specified for host '#{host_name}' " \
+              '(set in host configuration or global options)'
+      end
 
       {
         'apiVersion' => 'kubevirt.io/v1',

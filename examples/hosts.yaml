@@ -47,7 +47,7 @@ HOSTS:
         - publickey
 
 CONFIG:
-  # Global KubeVirt configuration
+  # Global KubeVirt configuration, use the KUBECONFIG env var or default path
   kubeconfig: <%= ENV.fetch('KUBECONFIG', '~/.kube/config') %>
   kubecontext: my-cluster  # optional
   namespace: beaker-tests  # required - namespace for all VMs

@@ -73,7 +73,7 @@ CONFIG:
 | `namespace` | Kubernetes namespace for VMs | **Yes** | `default` | **CONFIG (global)** |
 | `kubevirt_vm_image` | VM image specification | Yes | - | HOSTS (per-host) |
 | `kubevirt_network_mode` | Networking mode | No | `port-forward` | HOSTS (per-host) |
-| `kubevirt_networks` | Custom network configuration | No | Auto-generated | HOSTS (per-host) |
+| `networks` | Custom network configuration | No | Auto-generated | HOSTS (per-host) |
 | `kubevirt_ssh_key` | SSH public key path or content | Yes | Auto-detect from `~/.ssh/` | HOSTS (per-host) |
 | `kubevirt_cpus` | CPU cores for VM | No | `1` | HOSTS (per-host) |
 | `kubevirt_memory` | Memory for VM | No | `2Gi` | HOSTS (per-host) |
