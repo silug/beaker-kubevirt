@@ -153,7 +153,6 @@ When cloning PVCs from a different namespace than where the VMs run, you must co
 
     Apply the RoleBinding (replace `source-namespace` and `destination-namespace` with your actual namespaces):
 
-      
     ```bash
     kubectl apply -f pvc-clone-rbac.yaml
     ```
