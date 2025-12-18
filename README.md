@@ -157,7 +157,7 @@ When cloning PVCs from a different namespace than where the VMs run, you must co
     kubectl apply -f pvc-clone-rbac.yaml
     ```
 
-   This creates a `beaker-kubevirt` service account in the beaker test namespace with permissions to update DataVolumes to indicate a clone source in the specified source namespace.
+  This creates a `beaker-kubevirt` service account in the beaker test namespace with permissions to update DataVolumes to indicate a clone source in the specified source namespace.
 
 2. **Configure beaker to use the service account:**
 
