@@ -72,7 +72,7 @@ CONFIG:
 | `kubeconfig` | Path to kubeconfig file | Yes | `$KUBECONFIG` or `~/.kube/config` | CONFIG (global) |
 | `kubecontext` | Kubernetes context to use | No | Current context | CONFIG (global) |
 | `namespace` | Kubernetes namespace for VMs | **Yes** | `default` | **CONFIG (global)** |
-| `kubevirt_service_account` | Service account for PVC access and VM execution | No | `default` | CONFIG (global) |
+| `kubevirt_service_account` | Service account for cross-namespace PVC cloning | No | `default` | CONFIG (global) |
 | `kubevirt_vm_image` | VM image specification | Yes | - | HOSTS (per-host) |
 | `kubevirt_network_mode` | Networking mode | No | `port-forward` | HOSTS (per-host) |
 | `networks` | Custom network configuration | No | Auto-generated | HOSTS (per-host) |
