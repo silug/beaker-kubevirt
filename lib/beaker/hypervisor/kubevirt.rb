@@ -47,6 +47,7 @@ module Beaker
     # @option options [String] :kubeconfig Path to kubeconfig file
     # @option options [String] :kubecontext Kubernetes context to use (optional)
     # @option options [String] :namespace Kubernetes namespace for VMs (required)
+    # @option options [String] :kubevirt_service_account Kubernetes service account to use for PVC access (optional, required for cross-namespace PVC cloning)
     # @option options [String] :kubevirt_vm_image Base VM image (PVC, container image, etc.)
     # @option options [String] :kubevirt_network_mode Network mode (port-forward, nodeport, multus)
     # @option options [String] :kubevirt_ssh_key SSH public key to inject
@@ -62,6 +63,8 @@ module Beaker
       @options = options
       @namespace = @options[:namespace]
       raise 'Namespace must be specified in options' unless @namespace
+
+      @service_account = @options[:kubevirt_service_account]
 
       @logger = options[:logger]
       @hosts = kubevirt_hosts
@@ -145,8 +148,14 @@ module Beaker
       elsif vm_image && !vm_image.start_with?('docker://', 'oci://')
         # For PVC sources, we also need to clone to avoid sharing the same disk
         source_pvc = vm_image.sub(%r{^pvc://}, '')
-        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc}")
         host['source_pvc'] = source_pvc
+        if source_pvc.include?('/')
+          _, source_pvc_name = source_pvc.split('/', 2)
+        else
+          source_pvc_name = source_pvc
+        end
+        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc_name}")
+
       end
 
       cloud_init_data = generate_cloud_init(host)
@@ -195,8 +204,7 @@ module Beaker
     # @return [String] The generated VM name
     def generate_vm_name(host)
       host_name = host.respond_to?(:name) ? host.name : host['name']
-      base_name = host_name.gsub(/[^a-z0-9-]/, '-').downcase
-      "#{@test_group_identifier}-#{base_name}"
+      sanitize_k8s_name("#{@test_group_identifier}-#{host_name}")
     end
 
     ##
@@ -441,7 +449,8 @@ module Beaker
                     },
                   },
                 },
-              ],
+                generate_service_account_volume_spec,
+              ].compact,
             },
           },
         },
@@ -487,6 +496,7 @@ module Beaker
         'metadata' => {
           'name' => dv_name,
           'labels' => get_labels(host),
+          'namespace' => @namespace,
         },
         'spec' => {
           'storage' => {
@@ -494,6 +504,10 @@ module Beaker
           },
         },
       }
+
+      # If a custom service account is specified, add it to the DataVolume spec
+      # so it can access the source PVC when required (including cross-namespace clones)
+      dv_spec['spec']['serviceAccountName'] = @service_account if @service_account
 
       # Add storage size only if explicitly set or required (HTTP sources need it)
       if host['disk_size']
@@ -520,11 +534,14 @@ module Beaker
           },
         }
       elsif host['source_pvc']
+        name = host['source_pvc']
+        namespace = @namespace
+        namespace, name = host['source_pvc'].split('/', 2) if host['source_pvc'].include?('/')
         # Clone from source PVC
         dv_spec['spec']['source'] = {
           'pvc' => {
-            'namespace' => @namespace,
-            'name' => host['source_pvc'],
+            'namespace' => namespace,
+            'name' => name,
           },
         }
       end
@@ -762,6 +779,22 @@ module Beaker
       sanitized = sanitized[0..62] if sanitized.length > 63
 
       sanitized
+    end
+
+    ##
+    # Generate a service account volume specification if a service account is set.
+    # This defines a volume that can be used to attach the configured service account
+    # to the VM pod; it is independent of any use of service accounts in DataVolumes.
+    # @return [Hash, nil] Service account volume specification or nil
+    def generate_service_account_volume_spec
+      return nil unless @service_account
+
+      {
+        'name' => 'service-account-volume',
+        'serviceAccount' => {
+          'serviceAccountName' => @service_account,
+        },
+      }
     end
   end
 end
