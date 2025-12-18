@@ -47,6 +47,7 @@ module Beaker
     # @option options [String] :kubeconfig Path to kubeconfig file
     # @option options [String] :kubecontext Kubernetes context to use (optional)
     # @option options [String] :namespace Kubernetes namespace for VMs (required)
+    # @option options [String] :kubevirt_service_account Kubernetes service account to use for PVC access (optional, required for cross-namespace PVC cloning)
     # @option options [String] :kubevirt_vm_image Base VM image (PVC, container image, etc.)
     # @option options [String] :kubevirt_network_mode Network mode (port-forward, nodeport, multus)
     # @option options [String] :kubevirt_ssh_key SSH public key to inject
@@ -62,6 +63,8 @@ module Beaker
       @options = options
       @namespace = @options[:namespace]
       raise 'Namespace must be specified in options' unless @namespace
+
+      @service_account = @options[:kubevirt_service_account]
 
       @logger = options[:logger]
       @hosts = kubevirt_hosts
@@ -446,7 +449,8 @@ module Beaker
                     },
                   },
                 },
-              ],
+                generate_service_account_volume_spec,
+              ].compact,
             },
           },
         },
@@ -500,6 +504,10 @@ module Beaker
           },
         },
       }
+
+      # If a custom service account is specified and we're cloning from a different namespace,
+      # add the service account to the DataVolume spec so it can access the source PVC
+      dv_spec['spec']['serviceAccountName'] = @service_account if @service_account
 
       # Add storage size only if explicitly set or required (HTTP sources need it)
       if host['disk_size']
@@ -771,6 +779,21 @@ module Beaker
       sanitized = sanitized[0..62] if sanitized.length > 63
 
       sanitized
+    end
+
+    ##
+    # Generate service account volume specification if a service account is set
+    # This is needed to configure the VM to use the service account
+    # @return [Hash, nil] Service account volume specification or nil
+    def generate_service_account_volume_spec
+      return nil unless @service_account
+
+      {
+        'name' => 'service-account-volume',
+        'serviceAccount' => {
+          'serviceAccountName' => @service_account,
+        },
+      }
     end
   end
 end

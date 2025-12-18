@@ -59,6 +59,7 @@ CONFIG:
   kubeconfig: <%= ENV.fetch('KUBECONFIG', '~/.kube/config') %>
   kubecontext: my-context  # optional
   namespace: beaker-tests  # required - namespace for all VMs
+  kubevirt_service_account: beaker-kubevirt-sa  # optional - required for cross-namespace PVC cloning
   ssh:
     password: beaker
     auth_methods: ['publickey', 'password']
@@ -71,6 +72,7 @@ CONFIG:
 | `kubeconfig` | Path to kubeconfig file | Yes | `$KUBECONFIG` or `~/.kube/config` | CONFIG (global) |
 | `kubecontext` | Kubernetes context to use | No | Current context | CONFIG (global) |
 | `namespace` | Kubernetes namespace for VMs | **Yes** | `default` | **CONFIG (global)** |
+| `kubevirt_service_account` | Service account for PVC access and VM execution | No | `default` | CONFIG (global) |
 | `kubevirt_vm_image` | VM image specification | Yes | - | HOSTS (per-host) |
 | `kubevirt_network_mode` | Networking mode | No | `port-forward` | HOSTS (per-host) |
 | `networks` | Custom network configuration | No | Auto-generated | HOSTS (per-host) |
@@ -95,6 +97,86 @@ The `kubevirt_vm_image` option supports several formats:
 - **Container image**: `docker://quay.io/kubevirt/fedora-cloud-container-disk-demo` or `oci://quay.io/kubevirt/fedora-cloud-container-disk-demo`
 - **PVC reference**: `pvc:my-vm-disk`, `my-vm-disk` (uses current namespace), or `namespace/pvc-name` (cross-namespace PVC)
 - **DataVolume**: `http://example.com/my-datavolume.img` or `https://example.com/my-datavolume.img` NOTE: [KubeVirt CDI](https://github.com/kubevirt/containerized-data-importer) must be installed in the cluster for DataVolume support.
+
+### Cross-Namespace PVC Cloning
+
+When cloning PVCs from a different namespace than where the VMs run, you must configure a service account with appropriate RBAC permissions. This is required because the DataVolume controller needs authorization to read PVCs in the source namespace.
+
+#### Setup
+
+1. **Create the service account and RBAC resources:**
+
+    ```bash
+    kubectl create serviceaccount beaker-kubevirt -n beaker-tests
+    ```
+    Save the following RBAC configuration to `cluster-role.yaml`:
+    
+    ```yaml
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: beaker-kubevirt:volumes:clone
+    rules:
+      - apiGroups: 
+          - cdi.kubevirt.io
+        resources: 
+          - datavolumes/source
+        verbs: 
+          - '*'
+    ```
+
+    Then apply it:
+    
+    ```bash
+    kubectl apply -f cluster-role.yaml
+    ```
+
+    Save the following RoleBinding configuration to `pvc-clone-rbac.yaml`:
+
+    ```yaml
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: beaker-kubevirt:volumes:clone-binding
+      namespace: source-namespace
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: beaker-kubevirt:volumes:clone
+    subjects:
+      - kind: ServiceAccount
+        name: beaker-kubevirt
+        namespace: destination-namespace
+    ```
+
+    Apply the RoleBinding (replace `source-namespace` and `destination-namespace` with your actual namespaces):
+
+      
+    ```bash
+    kubectl apply -f pvc-clone-rbac.yaml
+    ```
+
+   This creates a `beaker-kubevirt` service account in the beaker test namespace with permissions to update DataVolumes to indicate a clone source in the specified source namespace.
+
+2. **Configure beaker to use the service account:**
+
+   ```yaml
+   CONFIG:
+     namespace: beaker-tests
+     kubevirt_service_account: beaker-kubevirt
+   ```
+
+3. **Reference PVCs from other namespaces:**
+
+   ```yaml
+   HOSTS:
+     test-vm:
+       kubevirt_vm_image: other-namespace/source-pvc-name
+   ```
+
+This configuration allows Beaker to create VMs that clone PVCs from different namespaces with the minimum required permissions.
 
 ### Network Modes
 

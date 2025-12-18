@@ -963,6 +963,56 @@ RSpec.describe Beaker::Kubevirt do
     end
   end
 
+  describe '#generate_service_account_volume_spec' do
+    context 'when service account is not set' do
+      let(:hypervisor) { described_class.new(hosts, options) }
+
+      it 'returns nil' do
+        result = hypervisor.send(:generate_service_account_volume_spec)
+        expect(result).to be_nil
+      end
+    end
+
+    context 'when service account is set' do
+      let(:options_with_sa) do
+        options.merge(kubevirt_service_account: 'beaker-kubevirt-sa')
+      end
+      let(:hypervisor) { described_class.new(hosts, options_with_sa) }
+
+      it 'returns a volume spec hash' do
+        result = hypervisor.send(:generate_service_account_volume_spec)
+        expect(result).to be_a(Hash)
+      end
+
+      it 'sets the volume name to service-account-volume' do
+        result = hypervisor.send(:generate_service_account_volume_spec)
+        expect(result['name']).to eq('service-account-volume')
+      end
+
+      it 'includes serviceAccount key' do
+        result = hypervisor.send(:generate_service_account_volume_spec)
+        expect(result).to have_key('serviceAccount')
+      end
+
+      it 'sets the serviceAccountName in the serviceAccount section' do
+        result = hypervisor.send(:generate_service_account_volume_spec)
+        expect(result['serviceAccount']['serviceAccountName']).to eq('beaker-kubevirt-sa')
+      end
+
+      it 'includes the correct service account name from options' do
+        result = hypervisor.send(:generate_service_account_volume_spec)
+        expect(result).to eq(
+          {
+            'name' => 'service-account-volume',
+            'serviceAccount' => {
+              'serviceAccountName' => 'beaker-kubevirt-sa',
+            },
+          },
+        )
+      end
+    end
+  end
+
   describe '#create_vm' do
     let(:hypervisor) { described_class.new(hosts, options) }
     let(:host) do
