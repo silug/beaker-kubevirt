@@ -146,8 +146,12 @@ module Beaker
         # For PVC sources, we also need to clone to avoid sharing the same disk
         source_pvc = vm_image.sub(%r{^pvc://}, '')
         host['source_pvc'] = source_pvc
-        _, source_pvc = source_pvc.split('/', 2) if source_pvc.include?('/')
-        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc}")
+        if source_pvc.include?('/')
+          _, source_pvc_name = source_pvc.split('/', 2)
+        else
+          source_pvc_name = source_pvc
+        end
+        host['dv_name'] = sanitize_k8s_name("#{vm_name}-#{source_pvc_name}")
 
       end
 
