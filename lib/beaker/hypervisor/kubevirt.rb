@@ -782,8 +782,9 @@ module Beaker
     end
 
     ##
-    # Generate service account volume specification if a service account is set
-    # This is needed to configure the VM to use the service account
+    # Generate a service account volume specification if a service account is set.
+    # This defines a volume that can be used to attach the configured service account
+    # to the VM pod; it is independent of any use of service accounts in DataVolumes.
     # @return [Hash, nil] Service account volume specification or nil
     def generate_service_account_volume_spec
       return nil unless @service_account
