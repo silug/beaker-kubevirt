@@ -505,8 +505,8 @@ module Beaker
         },
       }
 
-      # If a custom service account is specified and we're cloning from a different namespace,
-      # add the service account to the DataVolume spec so it can access the source PVC
+      # If a custom service account is specified, add it to the DataVolume spec
+      # so it can access the source PVC when required (including cross-namespace clones)
       dv_spec['spec']['serviceAccountName'] = @service_account if @service_account
 
       # Add storage size only if explicitly set or required (HTTP sources need it)
