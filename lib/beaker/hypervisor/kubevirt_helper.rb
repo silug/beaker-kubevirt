@@ -387,6 +387,12 @@ module Beaker
 
       if user_config['token']
         auth_options[:bearer_token] = user_config['token']
+      elsif user_config['tokenFile']
+        token_file_path = user_config['tokenFile']
+        raise "Token file not found: #{token_file_path}" unless File.exist?(token_file_path)
+
+        auth_options[:bearer_token] = File.read(token_file_path).strip
+
       elsif user_config['client-certificate-data'] && user_config['client-key-data']
         client_cert = Base64.strict_decode64(user_config['client-certificate-data'])
         client_key = Base64.strict_decode64(user_config['client-key-data'])
