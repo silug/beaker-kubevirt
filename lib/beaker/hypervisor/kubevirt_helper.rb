@@ -239,7 +239,7 @@ module Beaker
       )
     rescue StandardError => e
       # For testing or when Kubeclient can't parse, fall back to manual parsing
-      @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+      @logger&.warn("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
       setup_kubernetes_client_manual
     end
 
@@ -256,7 +256,7 @@ module Beaker
       )
     rescue StandardError => e
       # For testing or when Kubeclient can't parse, fall back to manual parsing
-      @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+      @logger&.warn("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
       setup_kubevirt_client_manual
     end
 
