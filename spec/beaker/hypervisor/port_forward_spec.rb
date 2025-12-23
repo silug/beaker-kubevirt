@@ -1343,5 +1343,64 @@ RSpec.describe KubeVirtPortForwarder do
       expect(forwarder.state).to eq(:stopped)
     end
   end
+
+  describe '#convert_ssl_options_to_tls' do
+    it 'converts ca_file to cert_chain_file for EventMachine' do
+      ssl_options = { ca_file: '/tmp/ca-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:cert_chain_file]).to eq('/tmp/ca-cert.pem')
+    end
+
+    it 'converts verify_ssl to verify_peer for EventMachine' do
+      ssl_options = { verify_ssl: false }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to eq(false)
+    end
+
+    it 'passes through client_key as private_key_file' do
+      ssl_options = { client_key: '/tmp/client-key.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:private_key_file]).to eq('/tmp/client-key.pem')
+    end
+
+    it 'passes through client_cert as cert_chain_file' do
+      ssl_options = { client_cert: '/tmp/client-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:cert_chain_file]).to eq('/tmp/client-cert.pem')
+    end
+
+    it 'handles combined ca_file and client_cert properly' do
+      # When both ca_file and client_cert are present, client_cert should take precedence
+      # for cert_chain_file since it's set later
+      ssl_options = { ca_file: '/tmp/ca.pem', client_cert: '/tmp/client.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:cert_chain_file]).to eq('/tmp/client.pem')
+    end
+
+    it 'returns empty hash for nil ssl_options' do
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, nil)
+      expect(tls_options).to eq({})
+    end
+
+    it 'returns empty hash for empty ssl_options' do
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, {})
+      expect(tls_options).to eq({})
+    end
+
+    it 'converts complete ssl_options with all fields' do
+      ssl_options = {
+        ca_file: '/tmp/ca.pem',
+        verify_ssl: true,
+        client_key: '/tmp/key.pem',
+        client_cert: '/tmp/cert.pem',
+      }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options).to include(
+        cert_chain_file: '/tmp/cert.pem',
+        verify_peer: true,
+        private_key_file: '/tmp/key.pem',
+      )
+    end
+  end
 end
 # rubocop:enable RSpec/SpecFilePathFormat

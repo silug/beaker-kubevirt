@@ -213,7 +213,7 @@ class KubeVirtPortForwarder
       @logger.info('Connection to VMI established. Proxying traffic.')
       proxy_traffic(client_socket, websocket)
     else
-      @logger.error('Failed to establish connection to VMI after multiple retries. Closing client socket.')
+      @logger.error('Failed to establish connection to VMI. Closing client socket.')
       client_socket.close
     end
   rescue IOError => e
@@ -258,8 +258,12 @@ class KubeVirtPortForwarder
     @logger.debug("Constructed WebSocket URL: #{url}")
 
     auth_token = @kube_client.auth_options[:bearer_token]
+    @logger.info("Using auth token: #{auth_token ? 'present' : 'absent'}")
     headers = {}
     headers['Authorization'] = "Bearer #{auth_token}" if auth_token && !auth_token.empty?
+
+    # Convert kubeclient SSL options to Faye::WebSocket/EventMachine TLS options
+    tls_options = convert_ssl_options_to_tls(@kube_client.ssl_options)
 
     retries.times do |i|
       return nil if client_socket.closed?
@@ -270,7 +274,7 @@ class KubeVirtPortForwarder
 
       EventMachine.schedule do
         protocols = [PLAIN_STREAM_PROTOCOL]
-        ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: @kube_client.ssl_options)
+        ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: tls_options)
 
         ws.on :open do |_event|
           @logger.debug("WebSocket connection opened. Negotiated protocol: '#{ws.protocol}'.")
@@ -443,4 +447,33 @@ class KubeVirtPortForwarder
     true
   end
   # rubocop:enable Naming/PredicateMethod
+
+  # Convert kubeclient SSL options to Faye::WebSocket/EventMachine TLS options.
+  # Kubeclient uses :ca_file, but EventMachine (used by Faye::WebSocket) expects :cert_chain_file.
+  # @param ssl_options [Hash] The SSL options from kubeclient
+  # @return [Hash] TLS options compatible with Faye::WebSocket::Client
+  def convert_ssl_options_to_tls(ssl_options)
+    return {} if ssl_options.nil? || ssl_options.empty?
+
+    tls_options = {}
+
+    # EventMachine uses :cert_chain_file instead of :ca_file for the CA certificate
+    if ssl_options[:ca_file]
+      tls_options[:cert_chain_file] = ssl_options[:ca_file]
+      @logger.debug("Using CA certificate file: #{ssl_options[:ca_file]}")
+    end
+
+    # Handle SSL verification setting
+    # Note: EventMachine uses :verify_peer (true/false), while kubeclient uses :verify_ssl
+    if ssl_options.key?(:verify_ssl)
+      tls_options[:verify_peer] = ssl_options[:verify_ssl]
+      @logger.debug("SSL verification: #{ssl_options[:verify_ssl]}")
+    end
+
+    # Pass through client certificates if present
+    tls_options[:private_key_file] = ssl_options[:client_key] if ssl_options[:client_key]
+    tls_options[:cert_chain_file] = ssl_options[:client_cert] if ssl_options[:client_cert]
+
+    tls_options
+  end
 end
