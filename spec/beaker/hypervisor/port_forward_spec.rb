@@ -1373,17 +1373,24 @@ RSpec.describe KubeVirtPortForwarder do
       expect(tls_options[:verify_peer]).to eq(false)
     end
 
+    it 'disables verification when OpenSSL::SSL::VERIFY_PEER (1) without custom CA' do
+      # EventMachine can't verify self-signed cluster certs, so disable even without explicit CA file
+      ssl_options = { verify_ssl: 1 }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to eq(false)
+    end
+
     it 'converts OpenSSL::SSL::VERIFY_NONE (0) to boolean false' do
       ssl_options = { verify_ssl: 0 } # OpenSSL::SSL::VERIFY_NONE
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
       expect(tls_options[:verify_peer]).to eq(false)
     end
 
-    it 'enables verification when OpenSSL::SSL::VERIFY_PEER (1) without custom CA' do
-      # Without a custom CA, use system CA store
-      ssl_options = { verify_ssl: 1 }
+    it 'disables verification when verify_ssl is any truthy value' do
+      # Any truthy verify_ssl value should be disabled for EventMachine
+      ssl_options = { verify_ssl: true }
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
-      expect(tls_options[:verify_peer]).to eq(true)
+      expect(tls_options[:verify_peer]).to eq(false)
     end
 
     it 'passes through client_key as private_key_file' do

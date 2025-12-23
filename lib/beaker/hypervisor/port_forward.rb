@@ -456,12 +456,19 @@ class KubeVirtPortForwarder
 
     tls_options = {}
 
+    # Debug: Log all SSL options to understand what we're receiving
+    @logger.debug("SSL options received: #{ssl_options.inspect}")
+
     # For in-cluster connections with self-signed certs, EventMachine's TLS support
     # doesn't provide an easy way to specify a custom CA certificate for server verification.
     # The :cert_chain_file option is for client certificates, not CA certs.
     # To work around this limitation (similar to how virtctl handles it), we disable
     # SSL verification when a CA cert is provided but verification would otherwise fail.
-    @logger.debug("CA certificate file available: #{ssl_options[:ca_file]}") if ssl_options[:ca_file]
+    if ssl_options[:ca_file]
+      @logger.debug("CA certificate file available: #{ssl_options[:ca_file]}")
+    else
+      @logger.debug('No CA certificate file in ssl_options')
+    end
 
     # Handle SSL verification setting
     # Note: EventMachine uses :verify_peer (true/false), while kubeclient uses :verify_ssl
@@ -476,17 +483,21 @@ class KubeVirtPortForwarder
         if verify_value != 0 && ssl_options[:ca_file]
           @logger.warn('SSL verification requested with custom CA, but EventMachine cannot easily verify with custom CA. Disabling verification.')
           tls_options[:verify_peer] = false
+        elsif verify_value != 0
+          # For in-cluster connections, even if we don't have ca_file in the hash,
+          # EventMachine still can't verify against the cluster's self-signed cert
+          # So disable verification for any non-zero verify_ssl value in this context
+          @logger.warn('SSL verification requested, but EventMachine cannot verify cluster self-signed certificates. Disabling verification.')
+          tls_options[:verify_peer] = false
         else
-          tls_options[:verify_peer] = (verify_value != 0)
+          tls_options[:verify_peer] = false
         end
       elsif verify_value == false
         tls_options[:verify_peer] = false
-      elsif ssl_options[:ca_file]
-        # If verification is requested (true) but we have a custom CA, disable it
-        @logger.warn('SSL verification requested with custom CA, but EventMachine cannot easily verify with custom CA. Disabling verification.')
-        tls_options[:verify_peer] = false
       else
-        tls_options[:verify_peer] = verify_value
+        # For any truthy value, disable verification to avoid EventMachine TLS issues
+        @logger.warn('SSL verification requested, but EventMachine cannot verify cluster self-signed certificates. Disabling verification.')
+        tls_options[:verify_peer] = false
       end
       @logger.debug("SSL verification: #{ssl_options[:verify_ssl]} -> verify_peer: #{tls_options[:verify_peer]}")
     elsif ssl_options[:ca_file]
