@@ -1345,16 +1345,45 @@ RSpec.describe KubeVirtPortForwarder do
   end
 
   describe '#convert_ssl_options_to_tls' do
-    it 'converts ca_file to cert_chain_file for EventMachine' do
+    it 'does not set cert_chain_file for CA certificate' do
+      # EventMachine's cert_chain_file is for client certs, not CA certs
       ssl_options = { ca_file: '/tmp/ca-cert.pem' }
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
-      expect(tls_options[:cert_chain_file]).to eq('/tmp/ca-cert.pem')
+      expect(tls_options[:cert_chain_file]).to be_nil
     end
 
-    it 'converts verify_ssl to verify_peer for EventMachine' do
+    it 'disables verification when CA file is present but no explicit verify_ssl' do
+      # When we have a custom CA but no explicit verification setting,
+      # we disable verification since EventMachine can't easily use custom CAs
+      ssl_options = { ca_file: '/tmp/ca-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to eq(false)
+    end
+
+    it 'converts verify_ssl false to verify_peer false' do
       ssl_options = { verify_ssl: false }
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
       expect(tls_options[:verify_peer]).to eq(false)
+    end
+
+    it 'disables verification when OpenSSL::SSL::VERIFY_PEER (1) with custom CA' do
+      # When verification is requested but we have a custom CA, disable it
+      ssl_options = { verify_ssl: 1, ca_file: '/tmp/ca-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to eq(false)
+    end
+
+    it 'converts OpenSSL::SSL::VERIFY_NONE (0) to boolean false' do
+      ssl_options = { verify_ssl: 0 } # OpenSSL::SSL::VERIFY_NONE
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to eq(false)
+    end
+
+    it 'enables verification when OpenSSL::SSL::VERIFY_PEER (1) without custom CA' do
+      # Without a custom CA, use system CA store
+      ssl_options = { verify_ssl: 1 }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to eq(true)
     end
 
     it 'passes through client_key as private_key_file' do
@@ -1369,9 +1398,8 @@ RSpec.describe KubeVirtPortForwarder do
       expect(tls_options[:cert_chain_file]).to eq('/tmp/client-cert.pem')
     end
 
-    it 'handles combined ca_file and client_cert properly' do
-      # When both ca_file and client_cert are present, client_cert should take precedence
-      # for cert_chain_file since it's set later
+    it 'handles client cert separately from CA cert' do
+      # Client cert uses cert_chain_file, CA cert does not
       ssl_options = { ca_file: '/tmp/ca.pem', client_cert: '/tmp/client.pem' }
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
       expect(tls_options[:cert_chain_file]).to eq('/tmp/client.pem')
@@ -1387,17 +1415,17 @@ RSpec.describe KubeVirtPortForwarder do
       expect(tls_options).to eq({})
     end
 
-    it 'converts complete ssl_options with all fields' do
+    it 'disables verification with complete ssl_options including CA' do
       ssl_options = {
         ca_file: '/tmp/ca.pem',
-        verify_ssl: true,
+        verify_ssl: 1, # Requested but will be disabled due to custom CA
         client_key: '/tmp/key.pem',
         client_cert: '/tmp/cert.pem',
       }
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
       expect(tls_options).to include(
+        verify_peer: false, # Disabled because of custom CA
         cert_chain_file: '/tmp/cert.pem',
-        verify_peer: true,
         private_key_file: '/tmp/key.pem',
       )
     end

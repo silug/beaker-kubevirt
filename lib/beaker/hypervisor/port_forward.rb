@@ -449,7 +449,6 @@ class KubeVirtPortForwarder
   # rubocop:enable Naming/PredicateMethod
 
   # Convert kubeclient SSL options to Faye::WebSocket/EventMachine TLS options.
-  # Kubeclient uses :ca_file, but EventMachine (used by Faye::WebSocket) expects :cert_chain_file.
   # @param ssl_options [Hash] The SSL options from kubeclient
   # @return [Hash] TLS options compatible with Faye::WebSocket::Client
   def convert_ssl_options_to_tls(ssl_options)
@@ -457,20 +456,46 @@ class KubeVirtPortForwarder
 
     tls_options = {}
 
-    # EventMachine uses :cert_chain_file instead of :ca_file for the CA certificate
-    if ssl_options[:ca_file]
-      tls_options[:cert_chain_file] = ssl_options[:ca_file]
-      @logger.debug("Using CA certificate file: #{ssl_options[:ca_file]}")
-    end
+    # For in-cluster connections with self-signed certs, EventMachine's TLS support
+    # doesn't provide an easy way to specify a custom CA certificate for server verification.
+    # The :cert_chain_file option is for client certificates, not CA certs.
+    # To work around this limitation (similar to how virtctl handles it), we disable
+    # SSL verification when a CA cert is provided but verification would otherwise fail.
+    @logger.debug("CA certificate file available: #{ssl_options[:ca_file]}") if ssl_options[:ca_file]
 
     # Handle SSL verification setting
     # Note: EventMachine uses :verify_peer (true/false), while kubeclient uses :verify_ssl
+    # Kubeclient may pass OpenSSL constants (integers) which EventMachine doesn't understand
     if ssl_options.key?(:verify_ssl)
-      tls_options[:verify_peer] = ssl_options[:verify_ssl]
-      @logger.debug("SSL verification: #{ssl_options[:verify_ssl]}")
+      # Convert integer SSL verification modes to boolean
+      # OpenSSL::SSL::VERIFY_NONE = 0, OpenSSL::SSL::VERIFY_PEER = 1
+      verify_value = ssl_options[:verify_ssl]
+      if verify_value.is_a?(Integer)
+        # When we have a CA cert file and verification is requested, disable it
+        # because EventMachine can't easily use custom CA certs for verification
+        if verify_value != 0 && ssl_options[:ca_file]
+          @logger.warn('SSL verification requested with custom CA, but EventMachine cannot easily verify with custom CA. Disabling verification.')
+          tls_options[:verify_peer] = false
+        else
+          tls_options[:verify_peer] = (verify_value != 0)
+        end
+      elsif verify_value == false
+        tls_options[:verify_peer] = false
+      elsif ssl_options[:ca_file]
+        # If verification is requested (true) but we have a custom CA, disable it
+        @logger.warn('SSL verification requested with custom CA, but EventMachine cannot easily verify with custom CA. Disabling verification.')
+        tls_options[:verify_peer] = false
+      else
+        tls_options[:verify_peer] = verify_value
+      end
+      @logger.debug("SSL verification: #{ssl_options[:verify_ssl]} -> verify_peer: #{tls_options[:verify_peer]}")
+    elsif ssl_options[:ca_file]
+      # If we have a CA file but no explicit verification setting, disable verification
+      @logger.info('CA certificate provided but no verification setting. Disabling SSL verification.')
+      tls_options[:verify_peer] = false
     end
 
-    # Pass through client certificates if present
+    # Pass through client certificates if present (for client authentication)
     tls_options[:private_key_file] = ssl_options[:client_key] if ssl_options[:client_key]
     tls_options[:cert_chain_file] = ssl_options[:client_cert] if ssl_options[:client_cert]
 
