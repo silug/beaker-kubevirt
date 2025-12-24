@@ -235,6 +235,10 @@ module Beaker
     def setup_kubernetes_client
       config = Kubeclient::Config.read(@kubeconfig_path)
       context_config = config.context(@kubecontext)
+
+      # Extract original SSL options before kubeclient processes them
+      @original_ssl_options = extract_original_ssl_options(context_config)
+
       @k8s_client = Kubeclient::Client.new(
         context_config.api_endpoint,
         'v1',
@@ -252,6 +256,10 @@ module Beaker
     def setup_kubevirt_client
       config = Kubeclient::Config.read(@kubeconfig_path)
       context_config = config.context(@kubecontext)
+
+      # Extract original SSL options before kubeclient processes them
+      @original_ssl_options = extract_original_ssl_options(context_config)
+
       @kubevirt_client = Kubeclient::Client.new(
         "#{context_config.api_endpoint}/apis/kubevirt.io",
         'v1',
@@ -364,6 +372,47 @@ module Beaker
       else
         obj
       end
+    end
+
+    ##
+    # Extract original SSL options from Kubeclient::Config context
+    # This preserves the :ca_file path before kubeclient converts it to :cert_store
+    # @param [Kubeclient::Config::Context] context The context from Kubeclient::Config
+    # @return [Hash] SSL options with :ca_file preserved
+    def extract_original_ssl_options(context)
+      ssl_options = {}
+
+      # Check if context has a cluster with CA data
+      if context.instance_variable_defined?(:@context)
+        raw_config = context.instance_variable_get(:@context)
+        cluster_name = raw_config['cluster']
+
+        if context.instance_variable_defined?(:@config)
+          config = context.instance_variable_get(:@config)
+          cluster = config['clusters']&.find { |c| c['name'] == cluster_name }
+          cluster_config = cluster&.dig('cluster')
+
+          if cluster_config
+            if cluster_config['certificate-authority-data']
+              ca_cert = Base64.strict_decode64(cluster_config['certificate-authority-data'])
+              ca_file_path = write_temp_file('ca-cert', ca_cert)
+              ssl_options[:ca_file] = ca_file_path
+            elsif cluster_config['certificate-authority']
+              ssl_options[:ca_file] = cluster_config['certificate-authority']
+            end
+
+            ssl_options[:verify_ssl] = false if cluster_config['insecure-skip-tls-verify']
+          end
+        end
+      end
+
+      # If we couldn't extract from context, try to use ssl_options and extract what we can
+      if ssl_options.empty? && context.respond_to?(:ssl_options)
+        context_ssl = context.ssl_options
+        ssl_options[:verify_ssl] = context_ssl[:verify_ssl] if context_ssl.key?(:verify_ssl)
+      end
+
+      ssl_options
     end
 
     ##
