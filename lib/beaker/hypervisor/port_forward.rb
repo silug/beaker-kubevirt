@@ -456,57 +456,34 @@ class KubeVirtPortForwarder
 
     tls_options = {}
 
-    # Debug: Log all SSL options to understand what we're receiving
-    @logger.debug("SSL options received: #{ssl_options.inspect}")
+    # Faye::WebSocket (built on EventMachine) supports custom CA certificates via the
+    # :root_cert_file option. This enables proper SSL verification for in-cluster connections
+    # with self-signed certificates.
+    #
+    # Note: :cert_chain_file is for client certificates, :root_cert_file is for CA certs
 
-    # For in-cluster connections with self-signed certs, EventMachine's TLS support
-    # doesn't provide an easy way to specify a custom CA certificate for server verification.
-    # The :cert_chain_file option is for client certificates, not CA certs.
-    # To work around this limitation (similar to how virtctl handles it), we disable
-    # SSL verification when a CA cert is provided but verification would otherwise fail.
+    # Pass CA certificate file for server verification
     if ssl_options[:ca_file]
-      @logger.debug("CA certificate file available: #{ssl_options[:ca_file]}")
-    else
-      @logger.debug('No CA certificate file in ssl_options')
+      tls_options[:root_cert_file] = ssl_options[:ca_file]
+      @logger.debug("Using CA certificate for server verification: #{ssl_options[:ca_file]}")
     end
 
     # Handle SSL verification setting
-    # Note: EventMachine uses :verify_peer (true/false), while kubeclient uses :verify_ssl
-    # Kubeclient may pass OpenSSL constants (integers) which EventMachine doesn't understand
+    # Faye::WebSocket uses :verify_peer (boolean), while kubeclient uses :verify_ssl (may be OpenSSL constant)
     if ssl_options.key?(:verify_ssl)
-      # Convert integer SSL verification modes to boolean
-      # OpenSSL::SSL::VERIFY_NONE = 0, OpenSSL::SSL::VERIFY_PEER = 1
       verify_value = ssl_options[:verify_ssl]
-      if verify_value.is_a?(Integer)
-        # When we have a CA cert file and verification is requested, disable it
-        # because EventMachine can't easily use custom CA certs for verification
-        if verify_value != 0 && ssl_options[:ca_file]
-          @logger.warn('SSL verification requested with custom CA, but EventMachine cannot easily verify with custom CA. Disabling verification.')
-          tls_options[:verify_peer] = false
-        elsif verify_value != 0
-          # For in-cluster connections, even if we don't have ca_file in the hash,
-          # EventMachine still can't verify against the cluster's self-signed cert
-          # So disable verification for any non-zero verify_ssl value in this context
-          @logger.warn('SSL verification requested, but EventMachine cannot verify cluster self-signed certificates. Disabling verification.')
-          tls_options[:verify_peer] = false
-        else
-          tls_options[:verify_peer] = false
-        end
-      elsif verify_value == false
-        tls_options[:verify_peer] = false
-      else
-        # For any truthy value, disable verification to avoid EventMachine TLS issues
-        @logger.warn('SSL verification requested, but EventMachine cannot verify cluster self-signed certificates. Disabling verification.')
-        tls_options[:verify_peer] = false
-      end
-      @logger.debug("SSL verification: #{ssl_options[:verify_ssl]} -> verify_peer: #{tls_options[:verify_peer]}")
-    elsif ssl_options[:ca_file]
-      # If we have a CA file but no explicit verification setting, disable verification
-      @logger.info('CA certificate provided but no verification setting. Disabling SSL verification.')
-      tls_options[:verify_peer] = false
+      # Convert OpenSSL constants to boolean
+      # OpenSSL::SSL::VERIFY_NONE = 0, OpenSSL::SSL::VERIFY_PEER = 1
+      tls_options[:verify_peer] = if verify_value.is_a?(Integer)
+                                    (verify_value != 0)
+                                  else
+                                    verify_value ? true : false
+                                  end
+      @logger.debug("SSL verification: #{verify_value} -> verify_peer: #{tls_options[:verify_peer]}")
     end
+    # If verify_ssl is not specified, Faye::WebSocket defaults to verify_peer: true (secure default)
 
-    # Pass through client certificates if present (for client authentication)
+    # Pass through client certificates if present (for mutual TLS authentication)
     tls_options[:private_key_file] = ssl_options[:client_key] if ssl_options[:client_key]
     tls_options[:cert_chain_file] = ssl_options[:client_cert] if ssl_options[:client_cert]
 
