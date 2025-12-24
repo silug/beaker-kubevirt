@@ -382,36 +382,75 @@ module Beaker
     def extract_original_ssl_options(context)
       ssl_options = {}
 
+      @logger&.info('=' * 80)
+      @logger&.info('EXTRACTING SSL OPTIONS FROM KUBECLIENT CONTEXT')
+      @logger&.info("Context class: #{context.class}")
+      @logger&.info("Context instance variables: #{context.instance_variables}")
+
+      # Log all instance variable contents
+      context.instance_variables.each do |var|
+        value = context.instance_variable_get(var)
+        @logger&.info("  #{var} (#{value.class}): #{value.inspect.truncate(500)}")
+      end
+
+      @logger&.info("Context responds to ssl_options? #{context.respond_to?(:ssl_options)}")
+      @logger&.info("context.ssl_options: #{context.ssl_options.inspect}") if context.respond_to?(:ssl_options)
+
+      @logger&.info("Context public methods (custom): #{(context.methods - Object.methods).sort}")
+      @logger&.info('=' * 80)
+
       # Check if context has a cluster with CA data
       if context.instance_variable_defined?(:@context)
         raw_config = context.instance_variable_get(:@context)
+        @logger&.info("Raw context config: #{raw_config.inspect}")
         cluster_name = raw_config['cluster']
+        @logger&.info("Found cluster name: #{cluster_name}")
 
         if context.instance_variable_defined?(:@config)
           config = context.instance_variable_get(:@config)
+          @logger&.info("Config has clusters? #{config.key?('clusters')}")
+          @logger&.info("Config clusters count: #{config['clusters']&.length}")
+
           cluster = config['clusters']&.find { |c| c['name'] == cluster_name }
+          @logger&.info("Found cluster: #{cluster.inspect.truncate(300)}")
+
           cluster_config = cluster&.dig('cluster')
+
+          @logger&.info("Cluster config keys: #{cluster_config&.keys}")
+          @logger&.info("Has certificate-authority-data? #{cluster_config&.key?('certificate-authority-data')}")
+          @logger&.info("Has certificate-authority? #{cluster_config&.key?('certificate-authority')}")
 
           if cluster_config
             if cluster_config['certificate-authority-data']
               ca_cert = Base64.strict_decode64(cluster_config['certificate-authority-data'])
               ca_file_path = write_temp_file('ca-cert', ca_cert)
               ssl_options[:ca_file] = ca_file_path
+              @logger&.info("✓ Extracted CA cert from certificate-authority-data: #{ca_file_path}")
             elsif cluster_config['certificate-authority']
               ssl_options[:ca_file] = cluster_config['certificate-authority']
+              @logger&.info("✓ Using CA file from certificate-authority: #{ssl_options[:ca_file]}")
             end
 
             ssl_options[:verify_ssl] = false if cluster_config['insecure-skip-tls-verify']
+          else
+            @logger&.warn('✗ Could not find cluster config in Kubeclient context')
           end
+        else
+          @logger&.warn('✗ Context does not have @config instance variable')
         end
+      else
+        @logger&.warn('✗ Context does not have @context instance variable')
       end
 
       # If we couldn't extract from context, try to use ssl_options and extract what we can
       if ssl_options.empty? && context.respond_to?(:ssl_options)
+        @logger&.warn('Could not extract CA file from context, falling back to context.ssl_options')
         context_ssl = context.ssl_options
         ssl_options[:verify_ssl] = context_ssl[:verify_ssl] if context_ssl.key?(:verify_ssl)
       end
 
+      @logger&.info("Final extracted SSL options: #{ssl_options.inspect}")
+      @logger&.info('=' * 80)
       ssl_options
     end
 
