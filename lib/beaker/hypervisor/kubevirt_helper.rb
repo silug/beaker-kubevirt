@@ -20,6 +20,9 @@ module Beaker
       # Store original SSL options for port forwarding (before kubeclient processes them)
       @original_ssl_options = nil
 
+      # Keep temp files alive to prevent garbage collection
+      @temp_files = []
+
       # Allow injection of clients for testing
       @k8s_client = options[:k8s_client]
       @kubevirt_client = options[:kubevirt_client]
@@ -353,9 +356,14 @@ module Beaker
     # @param [String] content File content
     # @return [String] Path to temporary file
     def write_temp_file(prefix, content)
-      file = Tempfile.new(prefix)
+      file = Tempfile.new([prefix, '.pem'])
+      file.binmode
       file.write(content)
+      file.flush
       file.close
+      # Keep reference to prevent garbage collection and file deletion
+      @temp_files << file
+      @logger&.debug("Created temp file: #{file.path} (#{content.bytesize} bytes)")
       file.path
     end
 
@@ -424,8 +432,15 @@ module Beaker
             if cluster_config['certificate-authority-data']
               ca_cert = Base64.strict_decode64(cluster_config['certificate-authority-data'])
               ca_file_path = write_temp_file('ca-cert', ca_cert)
-              ssl_options[:ca_file] = ca_file_path
-              @logger&.info("✓ Extracted CA cert from certificate-authority-data: #{ca_file_path}")
+
+              # Verify the file exists and is readable
+              if File.exist?(ca_file_path) && File.readable?(ca_file_path)
+                ssl_options[:ca_file] = ca_file_path
+                @logger&.info("✓ Extracted CA cert from certificate-authority-data: #{ca_file_path}")
+                @logger&.debug("  File exists: #{File.exist?(ca_file_path)}, size: #{File.size(ca_file_path)} bytes")
+              else
+                @logger&.error("✗ CA cert file not accessible: #{ca_file_path}")
+              end
             elsif cluster_config['certificate-authority']
               ssl_options[:ca_file] = cluster_config['certificate-authority']
               @logger&.info("✓ Using CA file from certificate-authority: #{ssl_options[:ca_file]}")
