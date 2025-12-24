@@ -51,7 +51,8 @@ class KubeVirtPortForwarder
   # @param local_port [Integer] The local TCP port to listen on.
   # @param logger [Logger] An optional logger instance.
   # @param on_error [Proc] An optional callback (proc or lambda) to handle errors.
-  def initialize(kube_client:, namespace:, vmi_name:, target_port:, local_port:, logger: nil, on_error: nil)
+  # @param ssl_options [Hash] Optional SSL options to use instead of kube_client's (to preserve :ca_file)
+  def initialize(kube_client:, namespace:, vmi_name:, target_port:, local_port:, logger: nil, on_error: nil, ssl_options: nil)
     @kube_client = kube_client
     @namespace = namespace
     @vmi_name = vmi_name
@@ -59,6 +60,7 @@ class KubeVirtPortForwarder
     @local_port = local_port
     @on_error = on_error
     @logger = logger || Logger.new($stdout, level: :info)
+    @ssl_options = ssl_options # Use provided ssl_options if available
 
     @state = :new
     @mutex = Mutex.new
@@ -263,7 +265,9 @@ class KubeVirtPortForwarder
     headers['Authorization'] = "Bearer #{auth_token}" if auth_token && !auth_token.empty?
 
     # Convert kubeclient SSL options to Faye::WebSocket/EventMachine TLS options
-    tls_options = convert_ssl_options_to_tls(@kube_client.ssl_options)
+    # Use provided ssl_options if available (to preserve :ca_file), otherwise use kube_client's
+    ssl_opts = @ssl_options || @kube_client.ssl_options
+    tls_options = convert_ssl_options_to_tls(ssl_opts)
 
     retries.times do |i|
       return nil if client_socket.closed?

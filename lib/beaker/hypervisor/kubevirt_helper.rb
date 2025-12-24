@@ -17,6 +17,9 @@ module Beaker
       @kubecontext = options[:kubecontext] || ENV.fetch('KUBECONTEXT', nil)
       @logger = options[:logger]
 
+      # Store original SSL options for port forwarding (before kubeclient processes them)
+      @original_ssl_options = nil
+
       # Allow injection of clients for testing
       @k8s_client = options[:k8s_client]
       @kubevirt_client = options[:kubevirt_client]
@@ -140,6 +143,7 @@ module Beaker
         local_port: local_port,
         logger: @logger,
         on_error: method(:forwarder_error_handler),
+        ssl_options: @original_ssl_options,
       )
 
       # Start the port forwarder in a background thread
@@ -268,6 +272,9 @@ module Beaker
       ssl_options = setup_ssl_options(context_config)
       auth_options = setup_auth_options(context_config)
 
+      # Store original SSL options before kubeclient processes them
+      @original_ssl_options = ssl_options.dup
+
       @k8s_client = Kubeclient::Client.new(
         context_config['cluster']['server'],
         'v1',
@@ -283,6 +290,9 @@ module Beaker
       context_config = get_context_config(config)
       ssl_options = setup_ssl_options(context_config)
       auth_options = setup_auth_options(context_config)
+
+      # Store original SSL options before kubeclient processes them
+      @original_ssl_options = ssl_options.dup
 
       kubevirt_endpoint = "#{context_config['cluster']['server']}/apis/kubevirt.io"
       @kubevirt_client = Kubeclient::Client.new(
