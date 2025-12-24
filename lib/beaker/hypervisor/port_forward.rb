@@ -456,6 +456,8 @@ class KubeVirtPortForwarder
 
     tls_options = {}
 
+    @logger.debug("Converting SSL options to TLS: #{ssl_options.inspect}")
+
     # Faye::WebSocket (built on EventMachine) supports custom CA certificates via the
     # :root_cert_file option. This enables proper SSL verification for in-cluster connections
     # with self-signed certificates.
@@ -465,10 +467,16 @@ class KubeVirtPortForwarder
     # Pass CA certificate file for server verification
     if ssl_options[:ca_file]
       tls_options[:root_cert_file] = ssl_options[:ca_file]
-      @logger.debug("Using CA certificate for server verification: #{ssl_options[:ca_file]}")
+      @logger.info("Using CA certificate for server verification: #{ssl_options[:ca_file]}")
+
+      # Explicitly enable verification when we have a CA cert, unless explicitly disabled
+      unless ssl_options.key?(:verify_ssl) && !ssl_options[:verify_ssl]
+        tls_options[:verify_peer] = true
+        @logger.info('Enabling SSL peer verification with custom CA')
+      end
     end
 
-    # Handle SSL verification setting
+    # Handle explicit SSL verification setting
     # Faye::WebSocket uses :verify_peer (boolean), while kubeclient uses :verify_ssl (may be OpenSSL constant)
     if ssl_options.key?(:verify_ssl)
       verify_value = ssl_options[:verify_ssl]
@@ -479,14 +487,14 @@ class KubeVirtPortForwarder
                                   else
                                     verify_value ? true : false
                                   end
-      @logger.debug("SSL verification: #{verify_value} -> verify_peer: #{tls_options[:verify_peer]}")
+      @logger.info("SSL verification explicitly set: #{verify_value} -> verify_peer: #{tls_options[:verify_peer]}")
     end
-    # If verify_ssl is not specified, Faye::WebSocket defaults to verify_peer: true (secure default)
 
     # Pass through client certificates if present (for mutual TLS authentication)
     tls_options[:private_key_file] = ssl_options[:client_key] if ssl_options[:client_key]
     tls_options[:cert_chain_file] = ssl_options[:client_cert] if ssl_options[:client_cert]
 
+    @logger.debug("Final TLS options: #{tls_options.inspect}")
     tls_options
   end
 end

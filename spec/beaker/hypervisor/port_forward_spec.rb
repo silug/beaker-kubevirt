@@ -1385,11 +1385,11 @@ RSpec.describe KubeVirtPortForwarder do
     end
 
     it 'defaults to verification enabled when only CA file is present' do
-      # Faye::WebSocket defaults to verify_peer: true, so we don't need to set it
+      # When CA file is present without explicit verify_ssl, we explicitly enable verification
       ssl_options = { ca_file: '/tmp/ca-cert.pem' }
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
       expect(tls_options[:root_cert_file]).to eq('/tmp/ca-cert.pem')
-      expect(tls_options[:verify_peer]).to be_nil # Let Faye::WebSocket use its secure default
+      expect(tls_options[:verify_peer]).to eq(true) # Explicitly enabled with CA cert
     end
 
     it 'passes through client_key as private_key_file' do
