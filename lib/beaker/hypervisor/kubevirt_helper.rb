@@ -87,14 +87,21 @@ module Beaker
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_vms(test_group_identifier)
       @logger.info("Cleaning up VMs for test group: #{test_group_identifier}")
+      label_selector = "beaker/test-group=#{test_group_identifier}"
+      @logger.debug("Using label selector: #{label_selector}")
+      
       vms = @kubevirt_client.get_virtual_machines(namespace: @namespace,
-                                                  label_selector: "beaker/test-group=#{test_group_identifier}")
+                                                  label_selector: label_selector)
+      @logger.info("Found #{vms.length} VM(s) with label beaker/test-group=#{test_group_identifier}")
+      
       vms.each do |vm|
         vm_name = vm.metadata.respond_to?(:name) ? vm.metadata.name : vm.metadata['name']
+        vm_labels = vm.metadata.respond_to?(:labels) ? vm.metadata.labels : vm.metadata['labels']
+        @logger.debug("Deleting VM #{vm_name} with labels: #{vm_labels.inspect}")
         @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
-        @logger.debug("Deleted VM #{vm_name} for test group #{test_group_identifier}")
+        @logger.info("Deleted VM #{vm_name}")
       rescue Kubeclient::ResourceNotFoundError
-        @logger.debug("VM #{vm_name} not found during cleanup for test group #{test_group_identifier}")
+        @logger.debug("VM #{vm_name} not found during cleanup")
       end
     end
 
@@ -103,14 +110,21 @@ module Beaker
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_secrets(test_group_identifier)
       @logger.info("Cleaning up secrets for test group: #{test_group_identifier}")
+      label_selector = "beaker/test-group=#{test_group_identifier}"
+      @logger.debug("Using label selector: #{label_selector}")
+      
       secrets = @k8s_client.get_secrets(namespace: @namespace,
-                                        label_selector: "beaker/test-group=#{test_group_identifier}")
+                                        label_selector: label_selector)
+      @logger.info("Found #{secrets.length} secret(s) with label beaker/test-group=#{test_group_identifier}")
+      
       secrets.each do |secret|
         secret_name = secret.metadata.respond_to?(:name) ? secret.metadata.name : secret.metadata['name']
+        secret_labels = secret.metadata.respond_to?(:labels) ? secret.metadata.labels : secret.metadata['labels']
+        @logger.debug("Deleting secret #{secret_name} with labels: #{secret_labels.inspect}")
         @k8s_client.delete_secret(secret_name, @namespace)
-        @logger.debug("Deleted secret #{secret_name} for test group #{test_group_identifier}")
+        @logger.info("Deleted secret #{secret_name}")
       rescue Kubeclient::ResourceNotFoundError
-        @logger.debug("Secret #{secret_name} not found during cleanup for test group #{test_group_identifier}")
+        @logger.debug("Secret #{secret_name} not found during cleanup")
       end
     end
 
@@ -119,14 +133,21 @@ module Beaker
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_services(test_group_identifier)
       @logger.info("Cleaning up services for test group: #{test_group_identifier}")
+      label_selector = "beaker/test-group=#{test_group_identifier}"
+      @logger.debug("Using label selector: #{label_selector}")
+      
       services = @k8s_client.get_services(namespace: @namespace,
-                                          label_selector: "beaker/test-group=#{test_group_identifier}")
+                                          label_selector: label_selector)
+      @logger.info("Found #{services.length} service(s) with label beaker/test-group=#{test_group_identifier}")
+      
       services.each do |service|
         service_name = service.metadata.respond_to?(:name) ? service.metadata.name : service.metadata['name']
+        service_labels = service.metadata.respond_to?(:labels) ? service.metadata.labels : service.metadata['labels']
+        @logger.debug("Deleting service #{service_name} with labels: #{service_labels.inspect}")
         @k8s_client.delete_service(service_name, @namespace)
-        @logger.debug("Deleted service #{service_name} for test group #{test_group_identifier}")
+        @logger.info("Deleted service #{service_name}")
       rescue Kubeclient::ResourceNotFoundError
-        @logger.debug("Service #{service_name} not found during cleanup for test group #{test_group_identifier}")
+        @logger.debug("Service #{service_name} not found during cleanup")
       end
     end
 
