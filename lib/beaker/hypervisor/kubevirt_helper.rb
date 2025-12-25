@@ -89,19 +89,34 @@ module Beaker
       @logger.info("Cleaning up VMs for test group: #{test_group_identifier}")
       label_selector = "beaker/test-group=#{test_group_identifier}"
       @logger.debug("Using label selector: #{label_selector}")
-      
+
       vms = @kubevirt_client.get_virtual_machines(namespace: @namespace,
                                                   label_selector: label_selector)
       @logger.info("Found #{vms.length} VM(s) with label beaker/test-group=#{test_group_identifier}")
-      
+
       vms.each do |vm|
-        vm_name = vm.metadata.respond_to?(:name) ? vm.metadata.name : vm.metadata['name']
+        # Extract VM name with better error handling
+        vm_name = if vm.metadata.respond_to?(:name)
+                    vm.metadata.name
+                  elsif vm.metadata.is_a?(Hash)
+                    vm.metadata['name'] || vm.metadata[:name]
+                  else
+                    nil
+                  end
+
+        unless vm_name && !vm_name.empty?
+          @logger.error("Cannot delete VM with empty or nil name. Metadata: #{vm.metadata.inspect}")
+          next
+        end
+
         vm_labels = vm.metadata.respond_to?(:labels) ? vm.metadata.labels : vm.metadata['labels']
         @logger.debug("Deleting VM #{vm_name} with labels: #{vm_labels.inspect}")
         @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
         @logger.info("Deleted VM #{vm_name}")
       rescue Kubeclient::ResourceNotFoundError
         @logger.debug("VM #{vm_name} not found during cleanup")
+      rescue StandardError => e
+        @logger.error("Error deleting VM #{vm_name}: #{e.message}")
       end
     end
 
@@ -112,19 +127,34 @@ module Beaker
       @logger.info("Cleaning up secrets for test group: #{test_group_identifier}")
       label_selector = "beaker/test-group=#{test_group_identifier}"
       @logger.debug("Using label selector: #{label_selector}")
-      
+
       secrets = @k8s_client.get_secrets(namespace: @namespace,
                                         label_selector: label_selector)
       @logger.info("Found #{secrets.length} secret(s) with label beaker/test-group=#{test_group_identifier}")
-      
+
       secrets.each do |secret|
-        secret_name = secret.metadata.respond_to?(:name) ? secret.metadata.name : secret.metadata['name']
+        # Extract secret name with better error handling
+        secret_name = if secret.metadata.respond_to?(:name)
+                        secret.metadata.name
+                      elsif secret.metadata.is_a?(Hash)
+                        secret.metadata['name'] || secret.metadata[:name]
+                      else
+                        nil
+                      end
+
+        unless secret_name && !secret_name.empty?
+          @logger.error("Cannot delete secret with empty or nil name. Metadata: #{secret.metadata.inspect}")
+          next
+        end
+
         secret_labels = secret.metadata.respond_to?(:labels) ? secret.metadata.labels : secret.metadata['labels']
         @logger.debug("Deleting secret #{secret_name} with labels: #{secret_labels.inspect}")
         @k8s_client.delete_secret(secret_name, @namespace)
         @logger.info("Deleted secret #{secret_name}")
       rescue Kubeclient::ResourceNotFoundError
         @logger.debug("Secret #{secret_name} not found during cleanup")
+      rescue StandardError => e
+        @logger.error("Error deleting secret #{secret_name}: #{e.message}")
       end
     end
 
@@ -135,19 +165,34 @@ module Beaker
       @logger.info("Cleaning up services for test group: #{test_group_identifier}")
       label_selector = "beaker/test-group=#{test_group_identifier}"
       @logger.debug("Using label selector: #{label_selector}")
-      
+
       services = @k8s_client.get_services(namespace: @namespace,
                                           label_selector: label_selector)
       @logger.info("Found #{services.length} service(s) with label beaker/test-group=#{test_group_identifier}")
-      
+
       services.each do |service|
-        service_name = service.metadata.respond_to?(:name) ? service.metadata.name : service.metadata['name']
+        # Extract service name with better error handling
+        service_name = if service.metadata.respond_to?(:name)
+                         service.metadata.name
+                       elsif service.metadata.is_a?(Hash)
+                         service.metadata['name'] || service.metadata[:name]
+                       else
+                         nil
+                       end
+
+        unless service_name && !service_name.empty?
+          @logger.error("Cannot delete service with empty or nil name. Metadata: #{service.metadata.inspect}")
+          next
+        end
+
         service_labels = service.metadata.respond_to?(:labels) ? service.metadata.labels : service.metadata['labels']
         @logger.debug("Deleting service #{service_name} with labels: #{service_labels.inspect}")
         @k8s_client.delete_service(service_name, @namespace)
         @logger.info("Deleted service #{service_name}")
       rescue Kubeclient::ResourceNotFoundError
         @logger.debug("Service #{service_name} not found during cleanup")
+      rescue StandardError => e
+        @logger.error("Error deleting service #{service_name}: #{e.message}")
       end
     end
 
