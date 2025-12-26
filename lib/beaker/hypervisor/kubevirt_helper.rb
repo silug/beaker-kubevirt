@@ -456,6 +456,10 @@ module Beaker
     def extract_original_ssl_options(context)
       ssl_options = {}
 
+      @logger&.debug("Extracting SSL from context class: #{context.class}")
+      @logger&.debug("Context has @context? #{context.instance_variable_defined?(:@context)}")
+      @logger&.debug("Context has @config? #{context.instance_variable_defined?(:@config)}")
+
       # Check if context has a cluster with CA data
       if context.instance_variable_defined?(:@context)
         raw_config = context.instance_variable_get(:@context)
@@ -468,6 +472,7 @@ module Beaker
           cluster_config = cluster&.dig('cluster')
 
           if cluster_config
+            @logger&.debug("Cluster config keys: #{cluster_config.keys.inspect}")
             if cluster_config['certificate-authority-data']
               ca_cert = Base64.strict_decode64(cluster_config['certificate-authority-data'])
               ca_file_path = write_temp_file('ca-cert', ca_cert)
@@ -475,35 +480,35 @@ module Beaker
               # Verify the file exists and is readable
               if File.exist?(ca_file_path) && File.readable?(ca_file_path)
                 ssl_options[:ca_file] = ca_file_path
-                @logger&.debug("Extracted CA cert to: #{ca_file_path}")
-                @logger&.debug("  File exists: #{File.exist?(ca_file_path)}, size: #{File.size(ca_file_path)} bytes")
+                @logger&.info("Extracted CA certificate to: #{ca_file_path}")
               else
-                @logger&.error("✗ CA cert file not accessible: #{ca_file_path}")
+                @logger&.error("CA cert file not accessible: #{ca_file_path}")
               end
             elsif cluster_config['certificate-authority']
               ssl_options[:ca_file] = cluster_config['certificate-authority']
-              @logger&.info("✓ Using CA file from certificate-authority: #{ssl_options[:ca_file]}")
+              @logger&.info("Using CA file: #{ssl_options[:ca_file]}")
             end
 
             ssl_options[:verify_ssl] = false if cluster_config['insecure-skip-tls-verify']
           else
-            @logger&.warn('✗ Could not find cluster config in Kubeclient context')
+            @logger&.warn('Could not find cluster config in Kubeclient context')
           end
         else
-          @logger&.warn('✗ Context does not have @config instance variable')
+          @logger&.warn('Context does not have @config instance variable')
         end
       else
-        @logger&.warn('✗ Context does not have @context instance variable')
+        @logger&.warn('Context does not have @context instance variable')
       end
 
       # If we couldn't extract from context, try to use ssl_options and extract what we can
       if ssl_options.empty? && context.respond_to?(:ssl_options)
-        @logger&.debug('Could not extract CA file from context, using context.ssl_options')
+        @logger&.warn('Could not extract CA file from context structure, checking context.ssl_options')
         context_ssl = context.ssl_options
+        @logger&.debug("context.ssl_options keys: #{context_ssl.keys.inspect}")
         ssl_options[:verify_ssl] = context_ssl[:verify_ssl] if context_ssl.key?(:verify_ssl)
       end
 
-      @logger&.debug("Extracted SSL options: #{ssl_options.keys.join(', ')}")
+      @logger&.info("Final SSL options for port forwarding: #{ssl_options.keys.join(', ')}")
       ssl_options
     end
 
