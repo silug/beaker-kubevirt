@@ -456,43 +456,16 @@ module Beaker
     def extract_original_ssl_options(context)
       ssl_options = {}
 
-      @logger&.info('=' * 80)
-      @logger&.info('EXTRACTING SSL OPTIONS FROM KUBECLIENT CONTEXT')
-      @logger&.info("Context class: #{context.class}")
-      @logger&.info("Context instance variables: #{context.instance_variables}")
-
-      # Log all instance variable contents
-      context.instance_variables.each do |var|
-        value = context.instance_variable_get(var)
-        @logger&.info("  #{var} (#{value.class}): #{value.inspect.truncate(500)}")
-      end
-
-      @logger&.info("Context responds to ssl_options? #{context.respond_to?(:ssl_options)}")
-      @logger&.info("context.ssl_options: #{context.ssl_options.inspect}") if context.respond_to?(:ssl_options)
-
-      @logger&.info("Context public methods (custom): #{(context.methods - Object.methods).sort}")
-      @logger&.info('=' * 80)
-
       # Check if context has a cluster with CA data
       if context.instance_variable_defined?(:@context)
         raw_config = context.instance_variable_get(:@context)
-        @logger&.info("Raw context config: #{raw_config.inspect}")
         cluster_name = raw_config['cluster']
-        @logger&.info("Found cluster name: #{cluster_name}")
+        @logger&.debug("Extracting SSL options from cluster: #{cluster_name}")
 
         if context.instance_variable_defined?(:@config)
           config = context.instance_variable_get(:@config)
-          @logger&.info("Config has clusters? #{config.key?('clusters')}")
-          @logger&.info("Config clusters count: #{config['clusters']&.length}")
-
           cluster = config['clusters']&.find { |c| c['name'] == cluster_name }
-          @logger&.info("Found cluster: #{cluster.inspect.truncate(300)}")
-
           cluster_config = cluster&.dig('cluster')
-
-          @logger&.info("Cluster config keys: #{cluster_config&.keys}")
-          @logger&.info("Has certificate-authority-data? #{cluster_config&.key?('certificate-authority-data')}")
-          @logger&.info("Has certificate-authority? #{cluster_config&.key?('certificate-authority')}")
 
           if cluster_config
             if cluster_config['certificate-authority-data']
@@ -502,7 +475,7 @@ module Beaker
               # Verify the file exists and is readable
               if File.exist?(ca_file_path) && File.readable?(ca_file_path)
                 ssl_options[:ca_file] = ca_file_path
-                @logger&.info("✓ Extracted CA cert from certificate-authority-data: #{ca_file_path}")
+                @logger&.debug("Extracted CA cert to: #{ca_file_path}")
                 @logger&.debug("  File exists: #{File.exist?(ca_file_path)}, size: #{File.size(ca_file_path)} bytes")
               else
                 @logger&.error("✗ CA cert file not accessible: #{ca_file_path}")
@@ -525,13 +498,12 @@ module Beaker
 
       # If we couldn't extract from context, try to use ssl_options and extract what we can
       if ssl_options.empty? && context.respond_to?(:ssl_options)
-        @logger&.warn('Could not extract CA file from context, falling back to context.ssl_options')
+        @logger&.debug('Could not extract CA file from context, using context.ssl_options')
         context_ssl = context.ssl_options
         ssl_options[:verify_ssl] = context_ssl[:verify_ssl] if context_ssl.key?(:verify_ssl)
       end
 
-      @logger&.info("Final extracted SSL options: #{ssl_options.inspect}")
-      @logger&.info('=' * 80)
+      @logger&.debug("Extracted SSL options: #{ssl_options.keys.join(', ')}")
       ssl_options
     end
 
