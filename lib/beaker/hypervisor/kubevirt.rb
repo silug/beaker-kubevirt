@@ -394,7 +394,7 @@ module Beaker
           'labels' => get_labels(host),
         },
         'spec' => {
-          'running' => true,
+          'runStrategy' => 'Once',
           'dataVolumeTemplates' => generate_root_volume_dvtemplate(vm_image, host),
           'template' => {
             'metadata' => {

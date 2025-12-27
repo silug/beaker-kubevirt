@@ -242,8 +242,8 @@ RSpec.describe Beaker::Kubevirt do
       expect(vm_spec['metadata']['namespace']).to eq('beaker-test')
     end
 
-    it 'is running' do
-      expect(vm_spec['spec']['running']).to be true
+    it 'has the correct runStrategy' do
+      expect(vm_spec['spec']['runStrategy']).to eq('Once')
     end
 
     it 'includes cloud-init configuration' do
