@@ -100,8 +100,6 @@ module Beaker
                     vm.metadata.name
                   elsif vm.metadata.is_a?(Hash)
                     vm.metadata['name'] || vm.metadata[:name]
-                  else
-                    nil
                   end
 
         unless vm_name && !vm_name.empty?
@@ -138,8 +136,6 @@ module Beaker
                         secret.metadata.name
                       elsif secret.metadata.is_a?(Hash)
                         secret.metadata['name'] || secret.metadata[:name]
-                      else
-                        nil
                       end
 
         unless secret_name && !secret_name.empty?
@@ -176,8 +172,6 @@ module Beaker
                          service.metadata.name
                        elsif service.metadata.is_a?(Hash)
                          service.metadata['name'] || service.metadata[:name]
-                       else
-                         nil
                        end
 
         unless service_name && !service_name.empty?
@@ -302,15 +296,16 @@ module Beaker
     ##
     # Setup Kubernetes API client
     def setup_kubernetes_client
-      config = Kubeclient::Config.read(@kubeconfig_path)
+      config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
       context_config = config.context(@kubecontext)
 
-      # Extract original SSL options before kubeclient processes them
-      @original_ssl_options = extract_original_ssl_options(context_config)
+      # Manually extract SSL options with CA file by parsing kubeconfig directly
+      # (Kubeclient context doesn't expose the raw CA file path/data)
+      @original_ssl_options = extract_ssl_from_kubeconfig
 
       @k8s_client = Kubeclient::Client.new(
         context_config.api_endpoint,
-        'v1',
+        context_config.api_version,
         ssl_options: context_config.ssl_options,
         auth_options: context_config.auth_options,
       )
@@ -323,11 +318,12 @@ module Beaker
     ##
     # Setup KubeVirt API client
     def setup_kubevirt_client
-      config = Kubeclient::Config.read(@kubeconfig_path)
+      config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
       context_config = config.context(@kubecontext)
 
-      # Extract original SSL options before kubeclient processes them
-      @original_ssl_options = extract_original_ssl_options(context_config)
+      # Manually extract SSL options with CA file by parsing kubeconfig directly
+      # (Kubeclient context doesn't expose the raw CA file path/data)
+      @original_ssl_options = extract_ssl_from_kubeconfig
 
       @kubevirt_client = Kubeclient::Client.new(
         "#{context_config.api_endpoint}/apis/kubevirt.io",
@@ -384,9 +380,11 @@ module Beaker
     # Load kubeconfig file
     # @return [Hash] Parsed kubeconfig
     def load_kubeconfig
+      return @kubeconfig_data if @kubeconfig_data
       raise "Kubeconfig file not found: #{@kubeconfig_path}" unless File.exist?(@kubeconfig_path)
 
-      YAML.safe_load_file(@kubeconfig_path)
+      @kubeconfig_data = YAML.safe_load_file(@kubeconfig_path)
+      @kubeconfig_data
     end
 
     ##
@@ -449,8 +447,20 @@ module Beaker
     end
 
     ##
-    # Extract original SSL options from Kubeclient::Config context
+    # Extract SSL options directly from kubeconfig file
     # This preserves the :ca_file path before kubeclient converts it to :cert_store
+    # @return [Hash] SSL options with :ca_file preserved
+    def extract_ssl_from_kubeconfig
+      config = load_kubeconfig
+      context_config = get_context_config(config)
+      ssl_options = setup_ssl_options(context_config)
+      @logger&.debug("Extracted SSL options from kubeconfig: #{ssl_options.keys.join(', ')}")
+      ssl_options
+    end
+
+    ##
+    # Extract original SSL options from Kubeclient::Config context (DEPRECATED - doesn't work)
+    # Kubeclient::Config::Context doesn't expose the raw kubeconfig data we need
     # @param [Kubeclient::Config::Context] context The context from Kubeclient::Config
     # @return [Hash] SSL options with :ca_file preserved
     def extract_original_ssl_options(context)
