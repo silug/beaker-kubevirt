@@ -30,6 +30,9 @@ module Beaker
       # Only setup clients if not provided (for testing)
       return if @k8s_client && @kubevirt_client
 
+      # Manually extract SSL options with CA file by parsing kubeconfig directly
+      # (Kubeclient context doesn't expose the raw CA file path/data)
+      @original_ssl_options = extract_ssl_from_kubeconfig
       setup_kubernetes_client
       setup_kubevirt_client
     end
@@ -299,10 +302,6 @@ module Beaker
       config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
       context_config = config.context(@kubecontext)
 
-      # Manually extract SSL options with CA file by parsing kubeconfig directly
-      # (Kubeclient context doesn't expose the raw CA file path/data)
-      @original_ssl_options = extract_ssl_from_kubeconfig
-
       @k8s_client = Kubeclient::Client.new(
         context_config.api_endpoint,
         context_config.api_version,
@@ -321,13 +320,9 @@ module Beaker
       config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
       context_config = config.context(@kubecontext)
 
-      # Manually extract SSL options with CA file by parsing kubeconfig directly
-      # (Kubeclient context doesn't expose the raw CA file path/data)
-      @original_ssl_options = extract_ssl_from_kubeconfig
-
       @kubevirt_client = Kubeclient::Client.new(
         "#{context_config.api_endpoint}/apis/kubevirt.io",
-        'v1',
+        context_config.api_version,
         ssl_options: context_config.ssl_options,
         auth_options: context_config.auth_options,
       )
