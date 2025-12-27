@@ -76,16 +76,6 @@ module Beaker
     end
 
     ##
-    # Delete a virtual machine
-    # @param [String] vm_name The VM name
-    def delete_vm(vm_name)
-      @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
-      @logger.debug("Deleted VM #{vm_name}")
-    rescue Kubeclient::ResourceNotFoundError
-      @logger.debug("VM #{vm_name} not found during deletion")
-    end
-
-    ##
     # Cleanup VMs created by this test group
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_vms(test_group_identifier)
@@ -284,16 +274,6 @@ module Beaker
       end
     end
 
-    ##
-    # Get service by name
-    # @param [String] service_name The service name
-    # @return [Hash] Service object
-    def get_service(service_name)
-      @k8s_client.get_service(service_name, @namespace)
-    rescue Kubeclient::ResourceNotFoundError
-      nil
-    end
-
     private
 
     ##
@@ -450,70 +430,6 @@ module Beaker
       context_config = get_context_config(config)
       ssl_options = setup_ssl_options(context_config)
       @logger&.debug("Extracted SSL options from kubeconfig: #{ssl_options.keys.join(', ')}")
-      ssl_options
-    end
-
-    ##
-    # Extract original SSL options from Kubeclient::Config context (DEPRECATED - doesn't work)
-    # Kubeclient::Config::Context doesn't expose the raw kubeconfig data we need
-    # @param [Kubeclient::Config::Context] context The context from Kubeclient::Config
-    # @return [Hash] SSL options with :ca_file preserved
-    def extract_original_ssl_options(context)
-      ssl_options = {}
-
-      @logger&.debug("Extracting SSL from context class: #{context.class}")
-      @logger&.debug("Context has @context? #{context.instance_variable_defined?(:@context)}")
-      @logger&.debug("Context has @config? #{context.instance_variable_defined?(:@config)}")
-
-      # Check if context has a cluster with CA data
-      if context.instance_variable_defined?(:@context)
-        raw_config = context.instance_variable_get(:@context)
-        cluster_name = raw_config['cluster']
-        @logger&.debug("Extracting SSL options from cluster: #{cluster_name}")
-
-        if context.instance_variable_defined?(:@config)
-          config = context.instance_variable_get(:@config)
-          cluster = config['clusters']&.find { |c| c['name'] == cluster_name }
-          cluster_config = cluster&.dig('cluster')
-
-          if cluster_config
-            @logger&.debug("Cluster config keys: #{cluster_config.keys.inspect}")
-            if cluster_config['certificate-authority-data']
-              ca_cert = Base64.strict_decode64(cluster_config['certificate-authority-data'])
-              ca_file_path = write_temp_file('ca-cert', ca_cert)
-
-              # Verify the file exists and is readable
-              if File.exist?(ca_file_path) && File.readable?(ca_file_path)
-                ssl_options[:ca_file] = ca_file_path
-                @logger&.info("Extracted CA certificate to: #{ca_file_path}")
-              else
-                @logger&.error("CA cert file not accessible: #{ca_file_path}")
-              end
-            elsif cluster_config['certificate-authority']
-              ssl_options[:ca_file] = cluster_config['certificate-authority']
-              @logger&.info("Using CA file: #{ssl_options[:ca_file]}")
-            end
-
-            ssl_options[:verify_ssl] = false if cluster_config['insecure-skip-tls-verify']
-          else
-            @logger&.warn('Could not find cluster config in Kubeclient context')
-          end
-        else
-          @logger&.warn('Context does not have @config instance variable')
-        end
-      else
-        @logger&.warn('Context does not have @context instance variable')
-      end
-
-      # If we couldn't extract from context, try to use ssl_options and extract what we can
-      if ssl_options.empty? && context.respond_to?(:ssl_options)
-        @logger&.warn('Could not extract CA file from context structure, checking context.ssl_options')
-        context_ssl = context.ssl_options
-        @logger&.debug("context.ssl_options keys: #{context_ssl.keys.inspect}")
-        ssl_options[:verify_ssl] = context_ssl[:verify_ssl] if context_ssl.key?(:verify_ssl)
-      end
-
-      @logger&.info("Final SSL options for port forwarding: #{ssl_options.keys.join(', ')}")
       ssl_options
     end
 
