@@ -88,19 +88,34 @@ module Beaker
       @logger.info("Found #{vms.length} VM(s) with label beaker/test-group=#{test_group_identifier}")
 
       vms.each do |vm|
-        # Extract VM name with better error handling
-        vm_name = if vm.metadata.respond_to?(:name)
+        # Log the full VM object structure to debug
+        @logger.debug("VM object class: #{vm.class}")
+        @logger.debug("VM object keys: #{vm.respond_to?(:keys) ? vm.keys : 'N/A'}")
+        @logger.debug("VM.metadata class: #{vm.metadata.class}")
+        @logger.debug("Full VM object: #{vm.inspect[0..500]}")
+
+        # Extract VM name - kubeclient returns RecursiveOpenStruct objects
+        vm_name = if vm.respond_to?(:metadata) && vm.metadata.respond_to?(:name)
                     vm.metadata.name
-                  elsif vm.metadata.is_a?(Hash)
-                    vm.metadata['name'] || vm.metadata[:name]
+                  elsif vm.is_a?(Hash) && vm['metadata']
+                    vm['metadata']['name'] || vm.dig('metadata', 'name')
+                  elsif vm.respond_to?(:[])
+                    vm.dig(:metadata, :name) || vm.dig('metadata', 'name')
+                  else
+                    nil
                   end
 
         unless vm_name && !vm_name.empty?
-          @logger.error("Cannot delete VM with empty or nil name. Metadata: #{vm.metadata.inspect}")
+          @logger.error('Cannot delete VM with empty or nil name.')
+          @logger.error("VM structure: #{vm.inspect[0..1000]}")
           next
         end
 
-        vm_labels = vm.metadata.respond_to?(:labels) ? vm.metadata.labels : vm.metadata['labels']
+        vm_labels = if vm.respond_to?(:metadata) && vm.metadata.respond_to?(:labels)
+                      vm.metadata.labels
+                    elsif vm.is_a?(Hash)
+                      vm.dig('metadata', 'labels') || vm.dig(:metadata, :labels)
+                    end
         @logger.debug("Deleting VM #{vm_name} with labels: #{vm_labels.inspect}")
         @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
         @logger.info("Deleted VM #{vm_name}")
@@ -108,6 +123,7 @@ module Beaker
         @logger.debug("VM #{vm_name} not found during cleanup")
       rescue StandardError => e
         @logger.error("Error deleting VM #{vm_name}: #{e.message}")
+        @logger.error("Backtrace: #{e.backtrace[0..5].join("\n")}")
       end
     end
 
