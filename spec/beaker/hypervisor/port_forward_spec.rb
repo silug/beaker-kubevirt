@@ -1283,7 +1283,7 @@ RSpec.describe KubeVirtPortForwarder do
       expect(all_log_messages.size).to be > 0
 
       # Verify the WebSocket URL was logged (shows we're testing the right code path)
-      url_logged = all_log_messages.any? { |msg| msg.include?('Constructed WebSocket URL') }
+      url_logged = all_log_messages.any? { |msg| msg.include?('WebSocket URL:') }
       expect(url_logged).to be true
     end
 
@@ -1389,7 +1389,7 @@ RSpec.describe KubeVirtPortForwarder do
       ssl_options = { ca_file: '/tmp/ca-cert.pem' }
       tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
       expect(tls_options[:root_cert_file]).to eq('/tmp/ca-cert.pem')
-      expect(tls_options[:verify_peer]).to eq(true) # Explicitly enabled with CA cert
+      expect(tls_options[:verify_peer]).to be(true) # Explicitly enabled with CA cert
     end
 
     it 'passes through client_key as private_key_file' do
