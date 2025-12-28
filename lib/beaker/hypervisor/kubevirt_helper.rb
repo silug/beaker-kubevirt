@@ -140,19 +140,38 @@ module Beaker
       @logger.info("Found #{secrets.length} secret(s) with label beaker/test-group=#{test_group_identifier}")
 
       secrets.each do |secret|
-        # Extract secret name with better error handling
-        secret_name = if secret.metadata.respond_to?(:name)
+        # Log the full secret object structure to debug
+        @logger.debug("Secret object class: #{secret.class}")
+        @logger.debug("Secret object keys: #{secret.respond_to?(:keys) ? secret.keys : 'N/A'}")
+        @logger.debug("Secret.metadata class: #{secret.metadata.class}")
+        @logger.debug("Full secret object: #{secret.inspect[0..500]}")
+        
+        # Extract secret name - kubeclient returns RecursiveOpenStruct or Resource objects
+        secret_name = if secret.respond_to?(:metadata) && secret.metadata.respond_to?(:name)
                         secret.metadata.name
-                      elsif secret.metadata.is_a?(Hash)
+                      elsif secret.respond_to?(:metadata) && secret.metadata.is_a?(Hash)
                         secret.metadata['name'] || secret.metadata[:name]
+                      elsif secret.is_a?(Hash) && secret['metadata']
+                        secret['metadata']['name'] || secret.dig('metadata', 'name')
+                      elsif secret.respond_to?(:[])
+                        secret.dig(:metadata, :name) || secret.dig('metadata', 'name')
+                      else
+                        nil
                       end
 
         unless secret_name && !secret_name.empty?
-          @logger.error("Cannot delete secret with empty or nil name. Metadata: #{secret.metadata.inspect}")
+          @logger.error("Cannot delete secret with empty or nil name.")
+          @logger.error("Secret structure: #{secret.inspect[0..1000]}")
           next
         end
 
-        secret_labels = secret.metadata.respond_to?(:labels) ? secret.metadata.labels : secret.metadata['labels']
+        secret_labels = if secret.respond_to?(:metadata) && secret.metadata.respond_to?(:labels)
+                          secret.metadata.labels
+                        elsif secret.respond_to?(:metadata) && secret.metadata.is_a?(Hash)
+                          secret.metadata['labels'] || secret.metadata[:labels]
+                        elsif secret.is_a?(Hash)
+                          secret.dig('metadata', 'labels') || secret.dig(:metadata, :labels)
+                        end
         @logger.debug("Deleting secret #{secret_name} with labels: #{secret_labels.inspect}")
         @k8s_client.delete_secret(secret_name, @namespace)
         @logger.info("Deleted secret #{secret_name}")
