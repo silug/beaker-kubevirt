@@ -145,14 +145,12 @@ module Beaker
         @logger.debug("Secret object keys: #{secret.respond_to?(:keys) ? secret.keys : 'N/A'}")
         @logger.debug("Secret.metadata class: #{secret.metadata.class}")
         @logger.debug("Full secret object: #{secret.inspect[0..500]}")
-        
-        # Extract secret name - kubeclient returns RecursiveOpenStruct or Resource objects
-        secret_name = if secret.respond_to?(:metadata) && secret.metadata.respond_to?(:name)
-                        secret.metadata.name
-                      elsif secret.respond_to?(:metadata) && secret.metadata.is_a?(Hash)
-                        secret.metadata['name'] || secret.metadata[:name]
-                      elsif secret.is_a?(Hash) && secret['metadata']
-                        secret['metadata']['name'] || secret.dig('metadata', 'name')
+
+        # Debug: Check what secret.metadata actually contains
+        @logger.debug("secret.metadata['name'] = #{secret.metadata['name'].inspect}")
+        @logger.debug("secret.metadata[:name] = #{secret.metadata[:name].inspect}")
+        @logger.debug("secret.metadata.keys = #{secret.metadata.keys.inspect}")
+
                       elsif secret.respond_to?(:[])
                         secret.dig(:metadata, :name) || secret.dig('metadata', 'name')
                       else
@@ -160,7 +158,7 @@ module Beaker
                       end
 
         unless secret_name && !secret_name.empty?
-          @logger.error("Cannot delete secret with empty or nil name.")
+          @logger.error('Cannot delete secret with empty or nil name.')
           @logger.error("Secret structure: #{secret.inspect[0..1000]}")
           next
         end
