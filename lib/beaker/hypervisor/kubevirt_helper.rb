@@ -151,6 +151,13 @@ module Beaker
         @logger.debug("secret.metadata[:name] = #{secret.metadata[:name].inspect}")
         @logger.debug("secret.metadata.keys = #{secret.metadata.keys.inspect}")
 
+        # Extract secret name - kubeclient returns RecursiveOpenStruct or Resource objects
+        secret_name = if secret.respond_to?(:metadata) && secret.metadata.respond_to?(:name)
+                        secret.metadata.name
+                      elsif secret.respond_to?(:metadata) && secret.metadata.is_a?(Hash)
+                        secret.metadata['name'] || secret.metadata[:name]
+                      elsif secret.is_a?(Hash) && secret['metadata']
+                        secret['metadata']['name'] || secret.dig('metadata', 'name')
                       elsif secret.respond_to?(:[])
                         secret.dig(:metadata, :name) || secret.dig('metadata', 'name')
                       else
