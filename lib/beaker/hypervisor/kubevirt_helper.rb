@@ -88,22 +88,9 @@ module Beaker
       @logger.info("Found #{vms.length} VM(s) with label beaker/test-group=#{test_group_identifier}")
 
       vms.each do |vm|
-        # Log the full VM object structure to debug
-        @logger.debug("VM object class: #{vm.class}")
-        @logger.debug("VM object keys: #{vm.respond_to?(:keys) ? vm.keys : 'N/A'}")
-        @logger.debug("VM.metadata class: #{vm.metadata.class}")
-        @logger.debug("Full VM object: #{vm.inspect[0..500]}")
-
-        # Extract VM name - kubeclient returns RecursiveOpenStruct objects
-        vm_name = if vm.respond_to?(:metadata) && vm.metadata.respond_to?(:name)
-                    vm.metadata.name
-                  elsif vm.is_a?(Hash) && vm['metadata']
-                    vm['metadata']['name'] || vm.dig('metadata', 'name')
-                  elsif vm.respond_to?(:[])
-                    vm.dig(:metadata, :name) || vm.dig('metadata', 'name')
-                  else
-                    nil
-                  end
+        # Extract VM name - access hash-style to avoid RSpec metadata collision
+        vm_metadata = vm[:metadata] || vm['metadata']
+        vm_name = vm_metadata[:name] || vm_metadata['name'] if vm_metadata
 
         unless vm_name && !vm_name.empty?
           @logger.error('Cannot delete VM with empty or nil name.')
@@ -111,11 +98,7 @@ module Beaker
           next
         end
 
-        vm_labels = if vm.respond_to?(:metadata) && vm.metadata.respond_to?(:labels)
-                      vm.metadata.labels
-                    elsif vm.is_a?(Hash)
-                      vm.dig('metadata', 'labels') || vm.dig(:metadata, :labels)
-                    end
+        vm_labels = vm_metadata[:labels] || vm_metadata['labels'] if vm_metadata
         @logger.debug("Deleting VM #{vm_name} with labels: #{vm_labels.inspect}")
         @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
         @logger.info("Deleted VM #{vm_name}")
@@ -140,29 +123,9 @@ module Beaker
       @logger.info("Found #{secrets.length} secret(s) with label beaker/test-group=#{test_group_identifier}")
 
       secrets.each do |secret|
-        # Log the full secret object structure to debug
-        @logger.debug("Secret object class: #{secret.class}")
-        @logger.debug("Secret object keys: #{secret.respond_to?(:keys) ? secret.keys : 'N/A'}")
-        @logger.debug("Secret.metadata class: #{secret.metadata.class}")
-        @logger.debug("Full secret object: #{secret.inspect[0..500]}")
-
-        # Debug: Check what secret.metadata actually contains
-        @logger.debug("secret.metadata['name'] = #{secret.metadata['name'].inspect}")
-        @logger.debug("secret.metadata[:name] = #{secret.metadata[:name].inspect}")
-        @logger.debug("secret.metadata.keys = #{secret.metadata.keys.inspect}")
-
-        # Extract secret name - kubeclient returns RecursiveOpenStruct or Resource objects
-        secret_name = if secret.respond_to?(:metadata) && secret.metadata.respond_to?(:name)
-                        secret.metadata.name
-                      elsif secret.respond_to?(:metadata) && secret.metadata.is_a?(Hash)
-                        secret.metadata['name'] || secret.metadata[:name]
-                      elsif secret.is_a?(Hash) && secret['metadata']
-                        secret['metadata']['name'] || secret.dig('metadata', 'name')
-                      elsif secret.respond_to?(:[])
-                        secret.dig(:metadata, :name) || secret.dig('metadata', 'name')
-                      else
-                        nil
-                      end
+        # Extract secret name - access hash-style to avoid RSpec metadata collision
+        secret_metadata = secret[:metadata] || secret['metadata']
+        secret_name = secret_metadata[:name] || secret_metadata['name'] if secret_metadata
 
         unless secret_name && !secret_name.empty?
           @logger.error('Cannot delete secret with empty or nil name.')
@@ -170,13 +133,7 @@ module Beaker
           next
         end
 
-        secret_labels = if secret.respond_to?(:metadata) && secret.metadata.respond_to?(:labels)
-                          secret.metadata.labels
-                        elsif secret.respond_to?(:metadata) && secret.metadata.is_a?(Hash)
-                          secret.metadata['labels'] || secret.metadata[:labels]
-                        elsif secret.is_a?(Hash)
-                          secret.dig('metadata', 'labels') || secret.dig(:metadata, :labels)
-                        end
+        secret_labels = secret_metadata[:labels] || secret_metadata['labels'] if secret_metadata
         @logger.debug("Deleting secret #{secret_name} with labels: #{secret_labels.inspect}")
         @k8s_client.delete_secret(secret_name, @namespace)
         @logger.info("Deleted secret #{secret_name}")
@@ -200,19 +157,17 @@ module Beaker
       @logger.info("Found #{services.length} service(s) with label beaker/test-group=#{test_group_identifier}")
 
       services.each do |service|
-        # Extract service name with better error handling
-        service_name = if service.metadata.respond_to?(:name)
-                         service.metadata.name
-                       elsif service.metadata.is_a?(Hash)
-                         service.metadata['name'] || service.metadata[:name]
-                       end
+        # Extract service name - access hash-style to avoid RSpec metadata collision
+        service_metadata = service[:metadata] || service['metadata']
+        service_name = service_metadata[:name] || service_metadata['name'] if service_metadata
 
         unless service_name && !service_name.empty?
-          @logger.error("Cannot delete service with empty or nil name. Metadata: #{service.metadata.inspect}")
+          @logger.error('Cannot delete service with empty or nil name.')
+          @logger.error("Service structure: #{service.inspect[0..1000]}")
           next
         end
 
-        service_labels = service.metadata.respond_to?(:labels) ? service.metadata.labels : service.metadata['labels']
+        service_labels = service_metadata[:labels] || service_metadata['labels'] if service_metadata
         @logger.debug("Deleting service #{service_name} with labels: #{service_labels.inspect}")
         @k8s_client.delete_service(service_name, @namespace)
         @logger.info("Deleted service #{service_name}")
