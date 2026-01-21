@@ -38,7 +38,7 @@
 		"Install Kubevirt krew plugin": "kubectl krew install virt"
 	},
 	"mounts": [
-		"source=${localWorkspaceFolder}/.kube,target=/home/vscode/.kube,type=bind,consistency=cached",
+		"type=bind,src=${localEnv:HOME}/.kube,dst=/home/vscode/.kube,consistency=cached",
 	]
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},

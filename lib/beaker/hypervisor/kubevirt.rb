@@ -412,16 +412,6 @@ module Beaker
                 'memory' => {
                   'guest' => memory.to_s,
                 },
-                'resources' => {
-                  'limits' => {
-                    'cpu' => cpu.to_s,
-                    'memory' => memory.to_s,
-                  },
-                  'requests' => {
-                    'cpu' => '125m',
-                    'memory' => '1Gi',
-                  },
-                },
                 'devices' => generate_hardware_spec(host),
                 'features' => {
                   'acpi' => {},
