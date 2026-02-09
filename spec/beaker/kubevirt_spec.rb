@@ -1731,7 +1731,7 @@ RSpec.describe Beaker::Kubevirt do
       context 'thread safety' do
         it 'only allows cleanup to run once even with concurrent calls' do
           # Simulate concurrent calls to cleanup_on_exit
-          threads = 10.times.map do
+          threads = Array.new(10) do
             Thread.new do
               hypervisor.send(:cleanup_on_exit)
             end
