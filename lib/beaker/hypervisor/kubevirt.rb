@@ -71,6 +71,14 @@ module Beaker
       # Ensure the helper gets the validated namespace
       @kubevirt_helper = KubevirtHelper.new(@options)
       @test_group_identifier = "beaker-#{SecureRandom.hex(4)}"
+      @cleanup_called = false
+
+      # Register at_exit handler to ensure cleanup happens even on non-success exits
+      # This handles cases like Ctrl+C, errors, or test failures that occur after
+      # provisioning but before normal cleanup
+      at_exit do
+        cleanup_on_exit
+      end
     end
 
     ##
@@ -98,6 +106,9 @@ module Beaker
     ##
     # Shutdown and destroy virtual machines in KubeVirt
     def cleanup(timeout: 10, delay: 1)
+      return if @cleanup_called
+
+      @cleanup_called = true
       @logger.info('Cleaning up KubeVirt resources')
 
       @hosts.each do |host|
@@ -131,6 +142,39 @@ module Beaker
     end
 
     private
+
+    ##
+    # Cleanup handler called at exit
+    # Only performs cleanup if:
+    # - Cleanup hasn't already been called
+    # - User hasn't requested to preserve hosts (via BEAKER_destroy=no or preserve_hosts option)
+    def cleanup_on_exit
+      # Skip if cleanup was already called normally
+      return if @cleanup_called
+
+      # Check if user wants to preserve hosts
+      # BEAKER_destroy environment variable (no/never/onpass means preserve)
+      beaker_destroy = ENV.fetch('BEAKER_destroy', 'yes').downcase
+      preserve_from_env = %w[no never onpass].include?(beaker_destroy)
+
+      # Check preserve_hosts option (can be set via --preserve-hosts flag)
+      preserve_from_option = @options[:preserve_hosts] || false
+
+      if preserve_from_env || preserve_from_option
+        @logger.info('Preserving KubeVirt resources as requested (BEAKER_destroy or preserve_hosts option)')
+        return
+      end
+
+      # Perform cleanup
+      @logger.info('at_exit: Performing cleanup of KubeVirt resources')
+      begin
+        cleanup
+      rescue StandardError => e
+        # Log but don't raise - we're already exiting
+        @logger.error("Error during at_exit cleanup: #{e.message}")
+        @logger.debug(e.backtrace.join("\n"))
+      end
+    end
 
     ##
     # Create a single VM for the given host
