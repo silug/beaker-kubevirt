@@ -38,6 +38,11 @@ module Beaker
     SLEEPWAIT = 5
     SSH_TIMEOUT = 300
 
+    # Default value for BEAKER_destroy environment variable
+    DEFAULT_BEAKER_DESTROY = 'yes'
+    # Values of BEAKER_destroy that indicate resources should be preserved
+    BEAKER_DESTROY_PRESERVE_VALUES = %w[no never onpass].freeze
+
     ##
     # Create a new instance of the KubeVirt hypervisor object
     #
@@ -76,6 +81,8 @@ module Beaker
       # Register at_exit handler to ensure cleanup happens even on non-success exits
       # This handles cases like Ctrl+C, errors, or test failures that occur after
       # provisioning but before normal cleanup
+      # Note: Each instance registers its own at_exit handler, but cleanup is idempotent
+      # and scoped to the specific test_group_identifier for this instance
       at_exit do
         cleanup_on_exit
       end
@@ -154,14 +161,17 @@ module Beaker
 
       # Check if user wants to preserve hosts
       # BEAKER_destroy environment variable (no/never/onpass means preserve)
-      beaker_destroy = ENV.fetch('BEAKER_destroy', 'yes').downcase
-      preserve_from_env = %w[no never onpass].include?(beaker_destroy)
+      beaker_destroy = ENV.fetch('BEAKER_destroy', DEFAULT_BEAKER_DESTROY).downcase
+      preserve_from_env = BEAKER_DESTROY_PRESERVE_VALUES.include?(beaker_destroy)
 
       # Check preserve_hosts option (can be set via --preserve-hosts flag)
       preserve_from_option = @options[:preserve_hosts] || false
 
-      if preserve_from_env || preserve_from_option
-        @logger.info('Preserving KubeVirt resources as requested (BEAKER_destroy or preserve_hosts option)')
+      if preserve_from_env
+        @logger.info("Preserving KubeVirt resources (BEAKER_destroy=#{beaker_destroy})")
+        return
+      elsif preserve_from_option
+        @logger.info('Preserving KubeVirt resources (preserve_hosts option is set)')
         return
       end
 
