@@ -121,6 +121,15 @@ module Beaker
         @cleanup_called = true
       end
 
+      cleanup_impl(timeout: timeout, delay: delay)
+    end
+
+    private
+
+    ##
+    # Internal cleanup implementation that performs the actual cleanup work
+    # This is separate from cleanup() to avoid mutex issues when called from at_exit
+    def cleanup_impl(timeout: 10, delay: 1)
       @logger.info('Cleaning up KubeVirt resources')
 
       @hosts.each do |host|
@@ -153,19 +162,12 @@ module Beaker
       @kubevirt_helper.cleanup_services(@test_group_identifier)
     end
 
-    private
-
     ##
     # Cleanup handler called at exit
     # Only performs cleanup if:
     # - Cleanup hasn't already been called
     # - User hasn't requested to preserve hosts (via BEAKER_destroy=no or preserve_hosts option)
     def cleanup_on_exit
-      # Thread-safe check if cleanup was already called
-      @cleanup_mutex.synchronize do
-        return if @cleanup_called
-      end
-
       # Check if user wants to preserve hosts
       # BEAKER_destroy environment variable (no/never/onpass means preserve)
       beaker_destroy = ENV.fetch('BEAKER_destroy', DEFAULT_BEAKER_DESTROY).downcase
@@ -182,10 +184,22 @@ module Beaker
         return
       end
 
+      # Atomically check and set cleanup_called flag
+      should_cleanup = false
+      @cleanup_mutex.synchronize do
+        unless @cleanup_called
+          @cleanup_called = true
+          should_cleanup = true
+        end
+      end
+
+      return unless should_cleanup
+
       # Perform cleanup
       @logger.info('at_exit: Performing cleanup of KubeVirt resources')
       begin
-        cleanup
+        # Call cleanup_impl to avoid the mutex lock in cleanup method
+        cleanup_impl
       rescue StandardError => e
         # Log but don't raise - we're already exiting
         @logger.error("Error during at_exit cleanup: #{e.message}")
