@@ -5,6 +5,7 @@ require 'yaml'
 require 'base64'
 require 'socket'
 require 'tempfile'
+require 'thread'
 
 begin
   require 'beaker'
@@ -77,6 +78,7 @@ module Beaker
       @kubevirt_helper = KubevirtHelper.new(@options)
       @test_group_identifier = "beaker-#{SecureRandom.hex(4)}"
       @cleanup_called = false
+      @cleanup_mutex = Mutex.new
 
       # Register at_exit handler to ensure cleanup happens even on non-success exits
       # This handles cases like Ctrl+C, errors, or test failures that occur after
@@ -113,9 +115,12 @@ module Beaker
     ##
     # Shutdown and destroy virtual machines in KubeVirt
     def cleanup(timeout: 10, delay: 1)
-      return if @cleanup_called
+      @cleanup_mutex.synchronize do
+        return if @cleanup_called
 
-      @cleanup_called = true
+        @cleanup_called = true
+      end
+
       @logger.info('Cleaning up KubeVirt resources')
 
       @hosts.each do |host|
@@ -156,8 +161,10 @@ module Beaker
     # - Cleanup hasn't already been called
     # - User hasn't requested to preserve hosts (via BEAKER_destroy=no or preserve_hosts option)
     def cleanup_on_exit
-      # Skip if cleanup was already called normally
-      return if @cleanup_called
+      # Thread-safe check if cleanup was already called
+      @cleanup_mutex.synchronize do
+        return if @cleanup_called
+      end
 
       # Check if user wants to preserve hosts
       # BEAKER_destroy environment variable (no/never/onpass means preserve)
