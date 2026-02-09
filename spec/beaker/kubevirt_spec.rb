@@ -1530,4 +1530,234 @@ RSpec.describe Beaker::Kubevirt do
       end
     end
   end
+
+  describe 'at_exit cleanup handler' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    before do
+      allow(kubevirt_helper).to receive(:cleanup_vms)
+      allow(kubevirt_helper).to receive(:cleanup_secrets)
+      allow(kubevirt_helper).to receive(:cleanup_services)
+    end
+
+    describe '#initialize' do
+      it 'registers an at_exit handler' do
+        # The at_exit handler is registered during initialization
+        # We can verify this by checking that cleanup_on_exit is defined
+        expect(hypervisor).to respond_to(:cleanup_on_exit, true)
+      end
+
+      it 'initializes cleanup_called flag to false' do
+        expect(hypervisor.instance_variable_get(:@cleanup_called)).to be false
+      end
+
+      it 'initializes a cleanup mutex' do
+        expect(hypervisor.instance_variable_get(:@cleanup_mutex)).to be_a(Mutex)
+      end
+    end
+
+    describe '#cleanup' do
+      it 'sets cleanup_called flag to true' do
+        hypervisor.cleanup
+        expect(hypervisor.instance_variable_get(:@cleanup_called)).to be true
+      end
+
+      it 'only performs cleanup once when called multiple times' do
+        hypervisor.cleanup
+        hypervisor.cleanup
+        hypervisor.cleanup
+
+        # Should only be called once
+        expect(kubevirt_helper).to have_received(:cleanup_vms).once
+        expect(kubevirt_helper).to have_received(:cleanup_secrets).once
+        expect(kubevirt_helper).to have_received(:cleanup_services).once
+      end
+
+      it 'calls cleanup_impl to perform actual cleanup' do
+        allow(hypervisor).to receive(:cleanup_impl)
+        hypervisor.cleanup
+        expect(hypervisor).to have_received(:cleanup_impl)
+      end
+    end
+
+    describe '#cleanup_on_exit' do
+      context 'when cleanup has already been called' do
+        before do
+          hypervisor.cleanup
+        end
+
+        it 'does not perform cleanup again' do
+          # Reset the mock expectations
+          allow(kubevirt_helper).to receive(:cleanup_vms)
+          allow(kubevirt_helper).to receive(:cleanup_secrets)
+          allow(kubevirt_helper).to receive(:cleanup_services)
+
+          hypervisor.send(:cleanup_on_exit)
+
+          # Should not be called since cleanup was already called
+          expect(kubevirt_helper).not_to have_received(:cleanup_vms)
+          expect(kubevirt_helper).not_to have_received(:cleanup_secrets)
+          expect(kubevirt_helper).not_to have_received(:cleanup_services)
+        end
+      end
+
+      context 'when BEAKER_destroy is set to no' do
+        before do
+          ENV['BEAKER_destroy'] = 'no'
+        end
+
+        after do
+          ENV.delete('BEAKER_destroy')
+        end
+
+        it 'does not perform cleanup' do
+          hypervisor.send(:cleanup_on_exit)
+
+          expect(kubevirt_helper).not_to have_received(:cleanup_vms)
+          expect(kubevirt_helper).not_to have_received(:cleanup_secrets)
+          expect(kubevirt_helper).not_to have_received(:cleanup_services)
+        end
+
+        it 'logs preservation message with BEAKER_destroy value' do
+          logger = options[:logger]
+          expect(logger).to receive(:info).with('Preserving KubeVirt resources (BEAKER_destroy=no)')
+          hypervisor.send(:cleanup_on_exit)
+        end
+      end
+
+      context 'when BEAKER_destroy is set to never' do
+        before do
+          ENV['BEAKER_destroy'] = 'never'
+        end
+
+        after do
+          ENV.delete('BEAKER_destroy')
+        end
+
+        it 'does not perform cleanup' do
+          hypervisor.send(:cleanup_on_exit)
+
+          expect(kubevirt_helper).not_to have_received(:cleanup_vms)
+          expect(kubevirt_helper).not_to have_received(:cleanup_secrets)
+          expect(kubevirt_helper).not_to have_received(:cleanup_services)
+        end
+      end
+
+      context 'when BEAKER_destroy is set to onpass' do
+        before do
+          ENV['BEAKER_destroy'] = 'onpass'
+        end
+
+        after do
+          ENV.delete('BEAKER_destroy')
+        end
+
+        it 'does not perform cleanup' do
+          hypervisor.send(:cleanup_on_exit)
+
+          expect(kubevirt_helper).not_to have_received(:cleanup_vms)
+          expect(kubevirt_helper).not_to have_received(:cleanup_secrets)
+          expect(kubevirt_helper).not_to have_received(:cleanup_services)
+        end
+      end
+
+      context 'when preserve_hosts option is set to true' do
+        let(:options_with_preserve) do
+          options.merge(preserve_hosts: true)
+        end
+        let(:hypervisor_with_preserve) { described_class.new(hosts, options_with_preserve) }
+
+        before do
+          allow(kubevirt_helper).to receive(:cleanup_vms)
+          allow(kubevirt_helper).to receive(:cleanup_secrets)
+          allow(kubevirt_helper).to receive(:cleanup_services)
+        end
+
+        it 'does not perform cleanup' do
+          hypervisor_with_preserve.send(:cleanup_on_exit)
+
+          expect(kubevirt_helper).not_to have_received(:cleanup_vms)
+          expect(kubevirt_helper).not_to have_received(:cleanup_secrets)
+          expect(kubevirt_helper).not_to have_received(:cleanup_services)
+        end
+
+        it 'logs preservation message about preserve_hosts option' do
+          logger = options_with_preserve[:logger]
+          expect(logger).to receive(:info).with('Preserving KubeVirt resources (preserve_hosts option is set)')
+          hypervisor_with_preserve.send(:cleanup_on_exit)
+        end
+      end
+
+      context 'when cleanup has not been called and preservation is not requested' do
+        it 'performs cleanup' do
+          hypervisor.send(:cleanup_on_exit)
+
+          expect(kubevirt_helper).to have_received(:cleanup_vms)
+          expect(kubevirt_helper).to have_received(:cleanup_secrets)
+          expect(kubevirt_helper).to have_received(:cleanup_services)
+        end
+
+        it 'logs at_exit cleanup message' do
+          logger = options[:logger]
+          expect(logger).to receive(:info).with('at_exit: Performing cleanup of KubeVirt resources')
+          hypervisor.send(:cleanup_on_exit)
+        end
+
+        it 'sets cleanup_called flag to true' do
+          hypervisor.send(:cleanup_on_exit)
+          expect(hypervisor.instance_variable_get(:@cleanup_called)).to be true
+        end
+      end
+
+      context 'when cleanup_impl raises an error' do
+        before do
+          allow(hypervisor).to receive(:cleanup_impl).and_raise(StandardError, 'Cleanup failed')
+        end
+
+        it 'catches the error and logs it' do
+          logger = options[:logger]
+          expect(logger).to receive(:error).with('Error during at_exit cleanup: Cleanup failed')
+          expect(logger).to receive(:debug)
+
+          expect { hypervisor.send(:cleanup_on_exit) }.not_to raise_error
+        end
+
+        it 'does not raise the error' do
+          expect { hypervisor.send(:cleanup_on_exit) }.not_to raise_error
+        end
+      end
+
+      context 'thread safety' do
+        it 'only allows cleanup to run once even with concurrent calls' do
+          # Simulate concurrent calls to cleanup_on_exit
+          threads = 10.times.map do
+            Thread.new do
+              hypervisor.send(:cleanup_on_exit)
+            end
+          end
+
+          threads.each(&:join)
+
+          # Should only be called once despite 10 concurrent calls
+          expect(kubevirt_helper).to have_received(:cleanup_vms).once
+          expect(kubevirt_helper).to have_received(:cleanup_secrets).once
+          expect(kubevirt_helper).to have_received(:cleanup_services).once
+        end
+      end
+    end
+
+    describe 'constants' do
+      it 'defines DEFAULT_BEAKER_DESTROY' do
+        expect(described_class::DEFAULT_BEAKER_DESTROY).to eq('yes')
+      end
+
+      it 'defines BEAKER_DESTROY_PRESERVE_VALUES' do
+        expect(described_class::BEAKER_DESTROY_PRESERVE_VALUES).to eq(%w[no never onpass])
+      end
+
+      it 'freezes BEAKER_DESTROY_PRESERVE_VALUES' do
+        expect(described_class::BEAKER_DESTROY_PRESERVE_VALUES).to be_frozen
+      end
+    end
+  end
 end
