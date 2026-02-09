@@ -5,7 +5,6 @@ require 'yaml'
 require 'base64'
 require 'socket'
 require 'tempfile'
-require 'thread'
 
 begin
   require 'beaker'
