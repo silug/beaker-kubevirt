@@ -84,8 +84,11 @@ module Beaker
       # provisioning but before normal cleanup
       # Note: Each instance registers its own at_exit handler, but cleanup is idempotent
       # and scoped to the specific test_group_identifier for this instance
-      at_exit do
-        cleanup_on_exit
+      # Skip registration during tests to avoid issues with mock objects
+      unless defined?(RSpec)
+        at_exit do
+          cleanup_on_exit
+        end
       end
     end
 

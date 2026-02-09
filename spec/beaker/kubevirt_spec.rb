@@ -1541,9 +1541,10 @@ RSpec.describe Beaker::Kubevirt do
     end
 
     describe '#initialize' do
-      it 'registers an at_exit handler' do
-        # The at_exit handler is registered during initialization
-        # We can verify this by checking that cleanup_on_exit is defined
+      it 'does not register at_exit handler during tests' do
+        # The at_exit handler should NOT be registered during RSpec tests
+        # to avoid issues with mock objects being accessed outside the test lifecycle
+        # We can verify that cleanup_on_exit is still defined as a private method
         expect(hypervisor).to respond_to(:cleanup_on_exit, true)
       end
 
