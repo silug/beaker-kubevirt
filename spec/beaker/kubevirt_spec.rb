@@ -1587,14 +1587,14 @@ RSpec.describe Beaker::Kubevirt do
       end
 
       it 'cleanup_on_exit does not perform cleanup again' do
-          # Reset the mock expectations
-          allow(kubevirt_helper).to receive(:cleanup_vms)
-          allow(kubevirt_helper).to receive(:cleanup_secrets)
-          allow(kubevirt_helper).to receive(:cleanup_services)
+        # Reset the mock expectations
+        allow(kubevirt_helper).to receive(:cleanup_vms)
+        allow(kubevirt_helper).to receive(:cleanup_secrets)
+        allow(kubevirt_helper).to receive(:cleanup_services)
 
-          hypervisor.send(:cleanup_on_exit)
+        hypervisor.send(:cleanup_on_exit)
 
-          # Should not be called since cleanup was already called
+        # Should not be called since cleanup was already called
         expect(kubevirt_helper).not_to have_received(:cleanup_vms)
         expect(kubevirt_helper).not_to have_received(:cleanup_secrets)
         expect(kubevirt_helper).not_to have_received(:cleanup_services)
@@ -1607,7 +1607,7 @@ RSpec.describe Beaker::Kubevirt do
       end
 
       after do
-      ENV.delete('BEAKER_destroy')
+        ENV.delete('BEAKER_destroy')
       end
 
       it 'cleanup_on_exit does not perform cleanup' do
@@ -1632,7 +1632,7 @@ RSpec.describe Beaker::Kubevirt do
 
       after do
         ENV.delete('BEAKER_destroy')
-    end
+      end
 
       it 'cleanup_on_exit does not perform cleanup' do
         hypervisor.send(:cleanup_on_exit)
