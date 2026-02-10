@@ -38,6 +38,11 @@ module Beaker
     SLEEPWAIT = 5
     SSH_TIMEOUT = 300
 
+    # Default value for BEAKER_destroy environment variable
+    DEFAULT_BEAKER_DESTROY = 'yes'
+    # Values of BEAKER_destroy that indicate resources should be preserved
+    BEAKER_DESTROY_PRESERVE_VALUES = %w[no never onpass].freeze
+
     ##
     # Create a new instance of the KubeVirt hypervisor object
     #
@@ -71,6 +76,20 @@ module Beaker
       # Ensure the helper gets the validated namespace
       @kubevirt_helper = KubevirtHelper.new(@options)
       @test_group_identifier = "beaker-#{SecureRandom.hex(4)}"
+      @cleanup_called = false
+      @cleanup_mutex = Mutex.new
+
+      # Register at_exit handler to ensure cleanup happens even on non-success exits
+      # This handles cases like Ctrl+C, errors, or test failures that occur after
+      # provisioning but before normal cleanup
+      # Note: Each instance registers its own at_exit handler, but cleanup is idempotent
+      # and scoped to the specific test_group_identifier for this instance
+      # Skip registration during tests to avoid issues with mock objects
+      return if defined?(RSpec)
+
+      at_exit do
+        cleanup_on_exit
+      end
     end
 
     ##
@@ -98,6 +117,21 @@ module Beaker
     ##
     # Shutdown and destroy virtual machines in KubeVirt
     def cleanup(timeout: 10, delay: 1)
+      @cleanup_mutex.synchronize do
+        return if @cleanup_called
+
+        @cleanup_called = true
+      end
+
+      cleanup_impl(timeout: timeout, delay: delay)
+    end
+
+    private
+
+    ##
+    # Internal cleanup implementation that performs the actual cleanup work
+    # This is separate from cleanup() to avoid mutex issues when called from at_exit
+    def cleanup_impl(timeout: 10, delay: 1)
       @logger.info('Cleaning up KubeVirt resources')
 
       @hosts.each do |host|
@@ -130,7 +164,50 @@ module Beaker
       @kubevirt_helper.cleanup_services(@test_group_identifier)
     end
 
-    private
+    ##
+    # Cleanup handler called at exit
+    # Only performs cleanup if:
+    # - Cleanup hasn't already been called
+    # - User hasn't requested to preserve hosts (via BEAKER_destroy=no or preserve_hosts option)
+    def cleanup_on_exit
+      # Check if user wants to preserve hosts
+      # BEAKER_destroy environment variable (no/never/onpass means preserve)
+      beaker_destroy = ENV.fetch('BEAKER_destroy', DEFAULT_BEAKER_DESTROY).downcase
+      preserve_from_env = BEAKER_DESTROY_PRESERVE_VALUES.include?(beaker_destroy)
+
+      # Check preserve_hosts option (can be set via --preserve-hosts flag)
+      preserve_from_option = @options[:preserve_hosts] || false
+
+      if preserve_from_env
+        @logger.info("Preserving KubeVirt resources (BEAKER_destroy=#{beaker_destroy})")
+        return
+      elsif preserve_from_option
+        @logger.info('Preserving KubeVirt resources (preserve_hosts option is set)')
+        return
+      end
+
+      # Atomically check and set cleanup_called flag
+      should_cleanup = false
+      @cleanup_mutex.synchronize do
+        unless @cleanup_called
+          @cleanup_called = true
+          should_cleanup = true
+        end
+      end
+
+      return unless should_cleanup
+
+      # Perform cleanup
+      @logger.info('at_exit: Performing cleanup of KubeVirt resources')
+      begin
+        # Call cleanup_impl to avoid the mutex lock in cleanup method
+        cleanup_impl
+      rescue StandardError => e
+        # Log but don't raise - we're already exiting
+        @logger.error("Error during at_exit cleanup: #{e.message}")
+        @logger.debug(e.backtrace.join("\n"))
+      end
+    end
 
     ##
     # Create a single VM for the given host
