@@ -1545,7 +1545,7 @@ RSpec.describe Beaker::Kubevirt do
         # The at_exit handler should NOT be registered during RSpec tests
         # to avoid issues with mock objects being accessed outside the test lifecycle
         # We can verify that cleanup_on_exit is still defined as a private method
-        expect(hypervisor).to respond_to(:cleanup_on_exit, true)
+        expect(hypervisor.private_methods).to include(:cleanup_on_exit)
       end
 
       it 'initializes cleanup_called flag to false' do
@@ -1587,17 +1587,13 @@ RSpec.describe Beaker::Kubevirt do
       end
 
       it 'cleanup_on_exit does not perform cleanup again' do
-        # Reset the mock expectations
-        allow(kubevirt_helper).to receive(:cleanup_vms)
-        allow(kubevirt_helper).to receive(:cleanup_secrets)
-        allow(kubevirt_helper).to receive(:cleanup_services)
+        # Mock cleanup_impl to verify it's not called
+        allow(hypervisor).to receive(:cleanup_impl)
 
         hypervisor.send(:cleanup_on_exit)
 
-        # Should not be called since cleanup was already called
-        expect(kubevirt_helper).not_to have_received(:cleanup_vms)
-        expect(kubevirt_helper).not_to have_received(:cleanup_secrets)
-        expect(kubevirt_helper).not_to have_received(:cleanup_services)
+        # cleanup_impl should not be called since cleanup was already called
+        expect(hypervisor).not_to have_received(:cleanup_impl)
       end
     end
 
