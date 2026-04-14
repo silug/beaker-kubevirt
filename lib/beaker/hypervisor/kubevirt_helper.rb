@@ -16,6 +16,7 @@ module Beaker
       @kubeconfig_path = options[:kubeconfig] || ENV['KUBECONFIG'] || File.join(Dir.home, '.kube', 'config')
       @kubecontext = options[:kubecontext] || ENV.fetch('KUBECONTEXT', nil)
       @logger = options[:logger]
+      @temp_files = []
 
       # Allow injection of clients for testing
       @k8s_client = options[:k8s_client]
@@ -224,6 +225,15 @@ module Beaker
       nil
     end
 
+    ##
+    # Clean up temporary files containing sensitive credentials
+    def cleanup_temp_files
+      @temp_files.each do |file|
+        file.close! rescue nil # rubocop:disable Style/RescueModifier
+      end
+      @temp_files.clear
+    end
+
     private
 
     ##
@@ -338,6 +348,7 @@ module Beaker
       file = Tempfile.new(prefix)
       file.write(content)
       file.close
+      @temp_files << file
       file.path
     end
 

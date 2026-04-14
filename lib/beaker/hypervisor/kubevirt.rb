@@ -162,6 +162,8 @@ module Beaker
       @kubevirt_helper.cleanup_secrets(@test_group_identifier)
       # Cleanup services associated with the test group
       @kubevirt_helper.cleanup_services(@test_group_identifier)
+      # Cleanup temp files containing sensitive credentials
+      @kubevirt_helper.cleanup_temp_files if @kubevirt_helper.respond_to?(:cleanup_temp_files)
     end
 
     ##
