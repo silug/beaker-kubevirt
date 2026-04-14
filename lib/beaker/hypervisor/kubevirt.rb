@@ -323,7 +323,11 @@ module Beaker
 
       # Add custom cloud-init if provided
       if @options[:cloud_init]
-        custom_init = YAML.safe_load(@options[:cloud_init])
+        begin
+          custom_init = YAML.safe_load(@options[:cloud_init])
+        rescue Psych::SyntaxError => e
+          raise ArgumentError, "Invalid cloud-init YAML in kubevirt_cloud_init option: #{e.message}"
+        end
         cloud_init = cloud_init.merge(custom_init)
       end
       # It looks like the ssh-key is being wrapped to a new line by default, so we need to ensure it is properly formatted
