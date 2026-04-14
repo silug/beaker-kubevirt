@@ -330,7 +330,6 @@ module Beaker
       cloud_init_yaml = Psych.dump(cloud_init, line_width: -1)
       cloud_init_yaml.gsub!(/^---\n/, '') # Remove YAML document header
       "#cloud-config\n#{cloud_init_yaml}"
-      # Base64.strict_encode64("#cloud-config\n#{cloud_init_yaml}").strip
     end
 
     ##
@@ -453,7 +452,6 @@ module Beaker
       # If the memory is a plain number, assume MiB
       memory = "#{memory}Mi" if /^\d+$/.match?(memory)
       vm_image = host['kubevirt_vm_image'] || @options[:kubevirt_vm_image]
-      # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
       unless vm_image
