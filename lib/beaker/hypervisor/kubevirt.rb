@@ -339,7 +339,8 @@ module Beaker
     def find_ssh_key_pair
       if @options[:kubevirt_ssh_key]
         # If kubevirt_ssh_key is specified, it could be a public key path/content
-        ssh_key_path = File.expand_path(@options[:kubevirt_ssh_key])
+        ssh_key_value = @options[:kubevirt_ssh_key]
+        ssh_key_path = ssh_key_value.match?(%r{^[~/.]}) ? File.expand_path(ssh_key_value) : ssh_key_value
         if File.exist?(ssh_key_path)
           pub_key_path = ssh_key_path
           pub_key_content = File.read(pub_key_path).strip
