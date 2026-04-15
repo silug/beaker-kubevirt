@@ -58,6 +58,11 @@ module Beaker
     # @option options [String] :kubevirt_ssh_key SSH public key to inject
     # @option options [String] :kubevirt_cpus CPU resources for VM
     # @option options [String] :kubevirt_memory Memory resources for VM
+    # @option options [String] :kubevirt_memory_overhead Extra memory added to guest for the
+    #   container memory limit (default: '512Mi'). Needed for Windows guests where KubeVirt's
+    #   auto-computed virt-launcher overhead is too small and the compute container gets OOMKilled.
+    # @option options [String] :kubevirt_memory_request Memory request for the VM pod
+    #   (default: same as :kubevirt_memory).
     # @option options [Integer] :kubevirt_vm_ssh_port Port that SSH runs on inside the VM (default: 22)
     # @option options [Integer] :timeout Timeout for operations
     # @option options [Boolean] :kubevirt_disable_virtio Disable virtio devices (for compatibility with Windows)
@@ -452,6 +457,13 @@ module Beaker
       memory = host['kubevirt_memory'] || @options[:kubevirt_memory] || '2Gi'
       # If the memory is a plain number, assume MiB
       memory = "#{memory}Mi" if /^\d+$/.match?(memory)
+
+      overhead = host['kubevirt_memory_overhead'] || @options[:kubevirt_memory_overhead] || '512Mi'
+      overhead = "#{overhead}Mi" if /\A\d+\z/.match?(overhead.to_s)
+      memory_request = host['kubevirt_memory_request'] || @options[:kubevirt_memory_request] || memory
+      memory_request = "#{memory_request}Mi" if /\A\d+\z/.match?(memory_request.to_s)
+      memory_limit = "#{parse_memory_mib(memory) + parse_memory_mib(overhead)}Mi"
+
       vm_image = host['kubevirt_vm_image'] || @options[:kubevirt_vm_image]
       # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
@@ -488,6 +500,10 @@ module Beaker
                 },
                 'memory' => {
                   'guest' => memory.to_s,
+                },
+                'resources' => {
+                  'requests' => { 'memory' => memory_request },
+                  'limits' => { 'memory' => memory_limit },
                 },
                 'devices' => generate_hardware_spec(host),
                 'features' => {
@@ -662,7 +678,6 @@ module Beaker
       timeout = @options[:timeout] || 300
       begin
         Timeout.timeout(timeout) do
-          # Wait for the VM to be created and running
           loop do
             # First, wait for the VM to exist
             vm = @kubevirt_helper.get_vm(vm_name)
@@ -681,16 +696,55 @@ module Beaker
 
             # Then check if the VM is running
             vmi = @kubevirt_helper.get_vmi(vm_name)
-            if vmi && vmi.dig('status', 'phase') == 'Running'
+            phase = vmi && vmi.dig('status', 'phase')
+            if phase == 'Running'
               @logger.debug("VM #{vm_name} is running")
               break
             end
+
+            if %w[Failed Succeeded].include?(phase)
+              raise "VMI #{vm_name} entered terminal phase #{phase} before becoming Ready"
+            end
+
+            check_virt_launcher_health!(vm_name)
+
             sleep SLEEPWAIT
           end
         end
       rescue Timeout::Error
         @logger.error("Timeout waiting for VM #{vm_name} to be ready")
         raise
+      end
+    end
+
+    ##
+    # Inspect the virt-launcher pod backing a VMI and raise with a specific reason
+    # if it has already failed (OOMKilled, image pull errors, crash loops, etc.)
+    # so we fail fast instead of waiting the full timeout.
+    # @param [String] vm_name
+    def check_virt_launcher_health!(vm_name)
+      pod = @kubevirt_helper.get_virt_launcher_pod(vm_name)
+      return unless pod
+
+      phase = pod.dig('status', 'phase')
+      raise "virt-launcher pod for #{vm_name} entered phase #{phase}" if phase == 'Failed'
+
+      statuses = Array(pod.dig('status', 'containerStatuses')) +
+                 Array(pod.dig('status', 'initContainerStatuses'))
+      statuses.each do |cs|
+        name = cs['name']
+        waiting_reason = cs.dig('state', 'waiting', 'reason')
+        if %w[CrashLoopBackOff ImagePullBackOff ErrImagePull].include?(waiting_reason)
+          raise "virt-launcher container #{name} for #{vm_name} is #{waiting_reason}: " \
+                "#{cs.dig('state', 'waiting', 'message')}"
+        end
+
+        last_term = cs.dig('lastState', 'terminated') || cs.dig('state', 'terminated')
+        reason = last_term && last_term['reason']
+        next unless %w[OOMKilled Error ContainerCannotRun].include?(reason)
+
+        hint = reason == 'OOMKilled' && name == 'compute' ? ' — increase :kubevirt_memory_overhead (default 512Mi)' : ''
+        raise "virt-launcher container #{name} for #{vm_name} terminated: #{reason}#{hint}"
       end
     end
 
@@ -848,6 +902,20 @@ module Beaker
     # - Maximum length of 63 characters
     # @param [String] name The string to sanitize
     # @return [String] RFC 1035 compliant string
+    # Parse a memory string ("4Gi", "512Mi", "2048") into an integer number of MiB.
+    # @param [String, Integer] value
+    # @return [Integer] MiB
+    def parse_memory_mib(value)
+      s = value.to_s.strip
+      case s
+      when /\A(\d+)Gi\z/ then Regexp.last_match(1).to_i * 1024
+      when /\A(\d+)Mi\z/ then Regexp.last_match(1).to_i
+      when /\A(\d+)\z/   then s.to_i
+      else
+        raise ArgumentError, "Cannot parse memory value #{value.inspect} (expected Gi/Mi suffix or bare MiB)"
+      end
+    end
+
     def sanitize_k8s_name(name)
       # Remove invalid characters, replace with hyphens
       sanitized = name.downcase.gsub(/[^a-z0-9-]/, '-')

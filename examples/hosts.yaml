@@ -9,6 +9,10 @@ HOSTS:
     kubevirt_ssh_key: ~/.ssh/id_rsa.pub
     kubevirt_cpus: 2
     kubevirt_memory: 4Gi
+    # Extra memory added to the guest for the virt-launcher container memory
+    # limit. Bump this for Windows guests that get OOMKilled with the default.
+    kubevirt_memory_overhead: 512Mi
+    # kubevirt_memory_request: 4Gi   # defaults to kubevirt_memory
     # Beaker-specific configuration
     user: centos
     ssh:
