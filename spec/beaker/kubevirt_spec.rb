@@ -259,7 +259,7 @@ RSpec.describe Beaker::Kubevirt do
       expect(cloud_init_volume.dig('cloudInitNoCloud', 'secretRef', 'name')).to eq(vm_spec_args[:cloud_init_data])
     end
 
-    context 'resource requests/limits' do
+    context 'with explicit resource requests/limits' do
       let(:options) do
         {
           logger: instance_double(Logger).as_null_object,
@@ -293,7 +293,6 @@ RSpec.describe Beaker::Kubevirt do
         expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'requests', 'memory')).to eq('2Gi')
       end
     end
-
   end
 
   describe '#wait_for_vm_ready' do
@@ -310,9 +309,9 @@ RSpec.describe Beaker::Kubevirt do
     end
 
     it 'raises immediately when the compute container was OOMKilled' do
-      allow(kubevirt_helper).to receive(:get_vmi).and_return({ 'status' => { 'phase' => 'Scheduling' } })
-      allow(kubevirt_helper).to receive(:get_virt_launcher_pod).and_return(
-        {
+      allow(kubevirt_helper).to receive_messages(
+        get_vmi: { 'status' => { 'phase' => 'Scheduling' } },
+        get_virt_launcher_pod: {
           'status' => {
             'phase' => 'Running',
             'containerStatuses' => [
@@ -329,9 +328,9 @@ RSpec.describe Beaker::Kubevirt do
     end
 
     it 'surfaces OOMKilled with an overhead hint when the container is not yet waiting' do
-      allow(kubevirt_helper).to receive(:get_vmi).and_return({ 'status' => { 'phase' => 'Scheduling' } })
-      allow(kubevirt_helper).to receive(:get_virt_launcher_pod).and_return(
-        {
+      allow(kubevirt_helper).to receive_messages(
+        get_vmi: { 'status' => { 'phase' => 'Scheduling' } },
+        get_virt_launcher_pod: {
           'status' => {
             'phase' => 'Running',
             'containerStatuses' => [
