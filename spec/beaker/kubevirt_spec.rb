@@ -258,6 +258,100 @@ RSpec.describe Beaker::Kubevirt do
       cloud_init_volume = volumes.find { |v| v['name'] == 'cidata' }
       expect(cloud_init_volume.dig('cloudInitNoCloud', 'secretRef', 'name')).to eq(vm_spec_args[:cloud_init_data])
     end
+
+    context 'resource requests/limits' do
+      let(:options) do
+        {
+          logger: instance_double(Logger).as_null_object,
+          kubeconfig: '/tmp/kubeconfig',
+          namespace: 'beaker-test',
+          kubevirt_vm_image: 'docker://example/img',
+          kubevirt_memory: '4Gi',
+        }
+      end
+
+      it 'sets memory limit to guest plus default 512Mi overhead' do
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'limits', 'memory')).to eq('4608Mi')
+      end
+
+      it 'defaults memory request to the guest value' do
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'requests', 'memory')).to eq('4Gi')
+      end
+
+      it 'respects an overridden kubevirt_memory_overhead' do
+        options[:kubevirt_memory_overhead] = '1Gi'
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'limits', 'memory')).to eq('5120Mi')
+      end
+
+      it 'respects a per-host kubevirt_memory_overhead' do
+        hosts[0]['kubevirt_memory_overhead'] = '256Mi'
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'limits', 'memory')).to eq('4352Mi')
+      end
+
+      it 'respects an overridden kubevirt_memory_request' do
+        options[:kubevirt_memory_request] = '2Gi'
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'requests', 'memory')).to eq('2Gi')
+      end
+    end
+
+  end
+
+  describe '#wait_for_vm_ready' do
+    let(:hypervisor) { described_class.new(hosts, options.merge(timeout: 600)) }
+    let(:host) { { 'vm_name' => 'test-vm' } }
+
+    before do
+      stub_const('Beaker::Kubevirt::SLEEPWAIT', 0)
+    end
+
+    it 'returns when the VMI reaches Running' do
+      allow(kubevirt_helper).to receive(:get_vmi).and_return({ 'status' => { 'phase' => 'Running' } })
+      expect { hypervisor.send(:wait_for_vm_ready, host) }.not_to raise_error
+    end
+
+    it 'raises immediately when the compute container was OOMKilled' do
+      allow(kubevirt_helper).to receive(:get_vmi).and_return({ 'status' => { 'phase' => 'Scheduling' } })
+      allow(kubevirt_helper).to receive(:get_virt_launcher_pod).and_return(
+        {
+          'status' => {
+            'phase' => 'Running',
+            'containerStatuses' => [
+              {
+                'name' => 'compute',
+                'lastState' => { 'terminated' => { 'reason' => 'OOMKilled', 'exitCode' => 137 } },
+                'state' => { 'waiting' => { 'reason' => 'CrashLoopBackOff' } },
+              },
+            ],
+          },
+        },
+      )
+      expect { hypervisor.send(:wait_for_vm_ready, host) }.to raise_error(/CrashLoopBackOff|OOMKilled/)
+    end
+
+    it 'surfaces OOMKilled with an overhead hint when the container is not yet waiting' do
+      allow(kubevirt_helper).to receive(:get_vmi).and_return({ 'status' => { 'phase' => 'Scheduling' } })
+      allow(kubevirt_helper).to receive(:get_virt_launcher_pod).and_return(
+        {
+          'status' => {
+            'phase' => 'Running',
+            'containerStatuses' => [
+              {
+                'name' => 'compute',
+                'state' => { 'terminated' => { 'reason' => 'OOMKilled', 'exitCode' => 137 } },
+              },
+            ],
+          },
+        },
+      )
+      expect { hypervisor.send(:wait_for_vm_ready, host) }
+        .to raise_error(/OOMKilled.*kubevirt_memory_overhead/)
+    end
+
+    it 'raises when the VMI reaches a terminal phase' do
+      allow(kubevirt_helper).to receive(:get_vmi).and_return({ 'status' => { 'phase' => 'Failed' } })
+      expect { hypervisor.send(:wait_for_vm_ready, host) }
+        .to raise_error(/terminal phase Failed/)
+    end
   end
 
   describe '#generate_cloud_init' do
