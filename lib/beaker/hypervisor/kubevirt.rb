@@ -43,6 +43,13 @@ module Beaker
     # Values of BEAKER_destroy that indicate resources should be preserved
     BEAKER_DESTROY_PRESERVE_VALUES = %w[no never onpass].freeze
 
+    # VMI phases that indicate the VM will never reach Running.
+    VMI_TERMINAL_PHASES = %w[Failed Succeeded].freeze
+    # virt-launcher container waiting reasons we treat as fatal.
+    FATAL_CONTAINER_WAITING_REASONS = %w[CrashLoopBackOff ImagePullBackOff ErrImagePull].freeze
+    # virt-launcher container termination reasons we treat as fatal.
+    FATAL_CONTAINER_TERMINATED_REASONS = %w[OOMKilled Error ContainerCannotRun].freeze
+
     ##
     # Create a new instance of the KubeVirt hypervisor object
     #
@@ -702,15 +709,13 @@ module Beaker
 
             # Then check if the VM is running
             vmi = @kubevirt_helper.get_vmi(vm_name)
-            phase = vmi && vmi.dig('status', 'phase')
+            phase = vmi&.dig('status', 'phase')
             if phase == 'Running'
               @logger.debug("VM #{vm_name} is running")
               break
             end
 
-            if %w[Failed Succeeded].include?(phase)
-              raise "VMI #{vm_name} entered terminal phase #{phase} before becoming Ready"
-            end
+            raise "VMI #{vm_name} entered terminal phase #{phase} before becoming Ready" if VMI_TERMINAL_PHASES.include?(phase)
 
             check_virt_launcher_health!(vm_name)
 
@@ -740,16 +745,16 @@ module Beaker
       statuses.each do |cs|
         name = cs['name']
         waiting_reason = cs.dig('state', 'waiting', 'reason')
-        if %w[CrashLoopBackOff ImagePullBackOff ErrImagePull].include?(waiting_reason)
+        if FATAL_CONTAINER_WAITING_REASONS.include?(waiting_reason)
           raise "virt-launcher container #{name} for #{vm_name} is #{waiting_reason}: " \
                 "#{cs.dig('state', 'waiting', 'message')}"
         end
 
         last_term = cs.dig('lastState', 'terminated') || cs.dig('state', 'terminated')
         reason = last_term && last_term['reason']
-        next unless %w[OOMKilled Error ContainerCannotRun].include?(reason)
+        next unless FATAL_CONTAINER_TERMINATED_REASONS.include?(reason)
 
-        hint = reason == 'OOMKilled' && name == 'compute' ? ' — increase :kubevirt_memory_overhead (default 512Mi)' : ''
+        hint = (reason == 'OOMKilled' && name == 'compute') ? ' — increase :kubevirt_memory_overhead (default 512Mi)' : ''
         raise "virt-launcher container #{name} for #{vm_name} terminated: #{reason}#{hint}"
       end
     end
