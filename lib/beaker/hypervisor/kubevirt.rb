@@ -471,7 +471,7 @@ module Beaker
           'labels' => get_labels(host),
         },
         'spec' => {
-          'running' => true,
+          'runStrategy' => 'Once',
           'dataVolumeTemplates' => generate_root_volume_dvtemplate(vm_image, host),
           'template' => {
             'metadata' => {
@@ -664,6 +664,22 @@ module Beaker
         Timeout.timeout(timeout) do
           # Wait for the VM to be created and running
           loop do
+            # First, wait for the VM to exist
+            vm = @kubevirt_helper.get_vm(vm_name)
+            break if vm
+
+            @logger.debug("VM #{vm_name} not found yet, waiting...")
+            sleep SLEEPWAIT
+          end
+          loop do
+            # First, check if the VM still exists
+            vm = @kubevirt_helper.get_vm(vm_name)
+            unless vm
+              @logger.error("VM #{vm_name} no longer exists")
+              raise "VM #{vm_name} was deleted unexpectedly"
+            end
+
+            # Then check if the VM is running
             vmi = @kubevirt_helper.get_vmi(vm_name)
             if vmi && vmi.dig('status', 'phase') == 'Running'
               @logger.debug("VM #{vm_name} is running")

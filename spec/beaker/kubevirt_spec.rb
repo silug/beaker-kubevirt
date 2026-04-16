@@ -242,8 +242,8 @@ RSpec.describe Beaker::Kubevirt do
       expect(vm_spec['metadata']['namespace']).to eq('beaker-test')
     end
 
-    it 'is running' do
-      expect(vm_spec['spec']['running']).to be true
+    it 'has the correct runStrategy' do
+      expect(vm_spec['spec']['runStrategy']).to eq('Once')
     end
 
     it 'includes cloud-init configuration' do
@@ -1009,6 +1009,43 @@ RSpec.describe Beaker::Kubevirt do
             },
           },
         )
+      end
+    end
+  end
+
+  describe '#wait_for_vm_ready' do
+    let(:vm_name) { 'beaker-abc123-test-host' }
+    let(:hypervisor) { described_class.new(hosts, options.merge(timeout: 5)) }
+    let(:host) { hosts[0].merge('vm_name' => vm_name) }
+    let(:vm_object) { { 'metadata' => { 'name' => vm_name } } }
+    let(:running_vmi) { { 'status' => { 'phase' => 'Running' } } }
+
+    before do
+      allow(hypervisor).to receive(:sleep)
+    end
+
+    context 'when VM eventually exists and remains available' do
+      before do
+        allow(kubevirt_helper).to receive(:get_vm).with(vm_name).and_return(nil, vm_object, vm_object, vm_object)
+        allow(kubevirt_helper).to receive(:get_vmi).with(vm_name).and_return(nil, running_vmi)
+      end
+
+      it 'waits until the VMI is running' do
+        expect { hypervisor.send(:wait_for_vm_ready, host) }.not_to raise_error
+        expect(kubevirt_helper).to have_received(:get_vm).with(vm_name).at_least(:twice)
+        expect(kubevirt_helper).to have_received(:get_vmi).with(vm_name).at_least(:once)
+      end
+    end
+
+    context 'when VM disappears while waiting for VMI readiness' do
+      before do
+        allow(kubevirt_helper).to receive(:get_vm).with(vm_name).and_return(vm_object, vm_object, nil)
+        allow(kubevirt_helper).to receive(:get_vmi).with(vm_name).and_return(nil)
+      end
+
+      it 'raises an error indicating the VM was deleted' do
+        expect { hypervisor.send(:wait_for_vm_ready, host) }.to raise_error("VM #{vm_name} was deleted unexpectedly")
+        expect(kubevirt_helper).to have_received(:get_vm).with(vm_name).at_least(:twice)
       end
     end
   end
