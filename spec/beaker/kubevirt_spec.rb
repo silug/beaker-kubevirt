@@ -1050,7 +1050,6 @@ RSpec.describe Beaker::Kubevirt do
     end
   end
 
-
   describe '#create_vm' do
     let(:hypervisor) { described_class.new(hosts, options) }
     let(:host) do

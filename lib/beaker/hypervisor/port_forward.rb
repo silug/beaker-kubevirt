@@ -269,7 +269,7 @@ class KubeVirtPortForwarder
     ssl_opts = @ssl_options || @kube_client.ssl_options
     tls_options = convert_ssl_options_to_tls(ssl_opts)
 
-    retries.times do |i|
+    retries.times do |_i|
       return nil if client_socket.closed?
 
       @logger.info("Attempting to connect to VMI '#{@vmi_name}'...")
