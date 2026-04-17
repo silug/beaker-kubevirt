@@ -965,8 +965,12 @@ module Beaker
       if key_pair[:private_key_path]
         # Get the ssh options, modify them, and set them back
         ssh_options = host['ssh'] || {}
-        # Set the keys array to use the matching private key
-        ssh_options['keys'] = [key_pair[:private_key_path]]
+        # Prepend the matching key, preserve any pre-existing keys so fallbacks
+        # (agent-forwarded, project-wide CI key) still work if ours is unusable.
+        existing_keys = Array(ssh_options['keys'])
+        merged_keys = [key_pair[:private_key_path]] + existing_keys
+        merged_keys.uniq!
+        ssh_options['keys'] = merged_keys
         host['ssh'] = ssh_options
 
         @logger.info("Configured SSH to use private key: #{key_pair[:private_key_path]}")
