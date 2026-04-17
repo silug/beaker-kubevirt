@@ -48,6 +48,9 @@ module Beaker
     # Kubernetes label-value maximum length under Kubernetes label value constraints (63 chars).
     LABEL_VALUE_MAX = K8S_NAME_MAX
 
+    # RFC 1123 DNS label — same constraint kube-apiserver applies to namespaces.
+    NAMESPACE_RE = /\A[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\z/
+
     # VMI phases that indicate the VM will never reach Running.
     VMI_TERMINAL_PHASES = %w[Failed Succeeded].freeze
     # virt-launcher container waiting reasons we treat as fatal.
@@ -94,6 +97,7 @@ module Beaker
       @options = options
       @namespace = @options[:namespace]
       raise 'Namespace must be specified in options' unless @namespace
+      raise ArgumentError, "Invalid namespace #{@namespace.inspect}: must match RFC 1123 DNS label" unless NAMESPACE_RE.match?(@namespace)
 
       @service_account = @options[:kubevirt_service_account]
 

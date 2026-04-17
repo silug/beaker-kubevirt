@@ -6,6 +6,7 @@ require 'eventmachine'
 require 'socket'
 require 'logger'
 require 'json'
+require 'uri'
 
 # KubeVirtPortForwarder acts as a local TCP proxy for a port on a KubeVirt VMI.
 # It handles the entire lifecycle of discovering the VMI, establishing a
@@ -259,7 +260,9 @@ class KubeVirtPortForwarder
     path_prefix = uri.path.to_s.sub(%r{/api.*$}, '')
     base_url += path_prefix unless path_prefix.empty? || path_prefix == '/'
     base_ws_url = base_url.sub(/^http/, 'ws')
-    url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{@namespace}/virtualmachineinstances/#{@vmi_name}/portforward/#{@target_port}"
+    ns = URI.encode_www_form_component(@namespace)
+    vmi = URI.encode_www_form_component(@vmi_name)
+    url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{ns}/virtualmachineinstances/#{vmi}/portforward/#{@target_port.to_i}"
     @logger.debug("WebSocket URL: #{url}")
 
     auth_token = @kube_client.auth_options[:bearer_token]

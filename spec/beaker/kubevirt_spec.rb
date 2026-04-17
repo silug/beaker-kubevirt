@@ -62,6 +62,20 @@ RSpec.describe Beaker::Kubevirt do
 
       expect(test_group_id).to match(/^beaker-[a-f0-9]{8}$/)
     end
+
+    it 'rejects namespaces that contain path separators' do
+      bad_options = options.merge(namespace: 'foo/../bar')
+      expect do
+        described_class.new(hosts, bad_options)
+      end.to raise_error(ArgumentError, /RFC 1123 DNS label/)
+    end
+
+    it 'rejects uppercase namespaces' do
+      bad_options = options.merge(namespace: 'FOO')
+      expect do
+        described_class.new(hosts, bad_options)
+      end.to raise_error(ArgumentError, /RFC 1123 DNS label/)
+    end
   end
 
   describe '#provision' do
