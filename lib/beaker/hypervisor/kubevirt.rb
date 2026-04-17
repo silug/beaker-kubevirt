@@ -105,8 +105,11 @@ module Beaker
       # provisioning but before normal cleanup
       # Note: Each instance registers its own at_exit handler, but cleanup is idempotent
       # and scoped to the specific test_group_identifier for this instance
-      # Skip registration during tests to avoid issues with mock objects
-      return if defined?(RSpec)
+      # Skip registration during this gem's own rspec run (set by spec_helper).
+      # Gating on `defined?(RSpec)` misfired in downstream projects that run
+      # Beaker from inside their own rspec suite, suppressing the safety net
+      # for every consumer.
+      return if ENV['BEAKER_KUBEVIRT_DISABLE_AT_EXIT_CLEANUP'] == '1'
 
       at_exit do
         cleanup_on_exit

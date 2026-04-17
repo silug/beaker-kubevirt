@@ -4,6 +4,11 @@ require 'simplecov'
 
 SimpleCov.start
 
+# Suppress Beaker::Kubevirt's at_exit cleanup handler during this gem's own
+# test run. In downstream projects (which may also have RSpec loaded) the
+# handler should remain active.
+ENV['BEAKER_KUBEVIRT_DISABLE_AT_EXIT_CLEANUP'] = '1'
+
 require 'beaker/hypervisor/kubevirt'
 require 'beaker/hypervisor/kubevirt_helper'
 
