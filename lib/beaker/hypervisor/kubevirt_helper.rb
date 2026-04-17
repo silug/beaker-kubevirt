@@ -76,6 +76,28 @@ module Beaker
     end
 
     ##
+    # Get the virt-launcher pod backing a VMI.
+    # @param [String] vmi_name The VMI name (== VM name)
+    # @return [Hash, nil] pod object, or nil if not yet scheduled
+    def get_virt_launcher_pod(vmi_name)
+      pods = @k8s_client.get_pods(namespace: @namespace,
+                                  label_selector: "kubevirt.io/vm=#{vmi_name}")
+      pods.first
+    rescue Kubeclient::ResourceNotFoundError
+      nil
+    end
+
+    ##
+    # Delete a virtual machine
+    # @param [String] vm_name The VM name
+    def delete_vm(vm_name)
+      @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
+      @logger.debug("Deleted VM #{vm_name}")
+    rescue Kubeclient::ResourceNotFoundError
+      @logger.debug("VM #{vm_name} not found during deletion")
+    end
+
+    ##
     # Cleanup VMs created by this test group
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_vms(test_group_identifier)

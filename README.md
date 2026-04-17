@@ -79,9 +79,13 @@ CONFIG:
 | `kubevirt_ssh_key` | SSH public key path or content | Yes | Auto-detect from `~/.ssh/` | HOSTS (per-host) |
 | `kubevirt_cpus` | CPU cores for VM | No | `1` | HOSTS (per-host) |
 | `kubevirt_memory` | Memory for VM | No | `2Gi` | HOSTS (per-host) |
+| `kubevirt_memory_overhead` | Extra memory added to the guest for the virt-launcher container memory limit. Raise this for Windows guests that OOMKill with the default. | No | `512Mi` | HOSTS (per-host), CONFIG |
+| `kubevirt_memory_request` | Memory request for the VM pod. | No | Same as `kubevirt_memory` | HOSTS (per-host), CONFIG |
 | `kubevirt_disk_size` | Size of the root disk | No | `10Gi` | HOSTS (per-host) |
 | `kubevirt_cloud_init` | Custom cloud-init YAML | No | Auto-generated | HOSTS (per-host) |
 | `kubevirt_vm_ssh_port` | SSH port inside the VM | No | `22` | HOSTS (per-host) |
+| `kubevirt_readiness_probe_disabled` | Skip the VMI SSH readinessProbe. Default is `false` for pod-network modes and `true` for `multus` (where a probe from the virt-launcher netns typically can't reach a bridge-only guest). | No | mode-dependent | HOSTS (per-host), CONFIG |
+| `kubevirt_readiness_probe` | Probe tuning hash (snake_case keys): `initial_delay_seconds` (30), `period_seconds` (10), `timeout_seconds` (3), `failure_threshold` (60), `success_threshold` (1). The default failure budget (600s) accommodates slow Windows first-boots. When the probe is enabled, `timeout` is auto-raised to cover this budget. | No | see description | HOSTS (per-host), CONFIG |
 | `kubevirt_disable_virtio` | Disable virtio devices (for Windows compatibility). If set to true the disk bus will be set to `sata` and the network adapter will be model `e1000` | No | `false` | HOSTS (per-host) |
 
 **Important**: The `namespace`, `kubeconfig`, and `kubecontext` options must be specified in the global `CONFIG` section, not per-host. All VMs will be created in the same Kubernetes namespace.

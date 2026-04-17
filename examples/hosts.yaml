@@ -9,6 +9,16 @@ HOSTS:
     kubevirt_ssh_key: ~/.ssh/id_rsa.pub
     kubevirt_cpus: 2
     kubevirt_memory: 4Gi
+    # Extra memory added to the guest for the virt-launcher container memory
+    # limit. Bump this for Windows guests that get OOMKilled with the default.
+    kubevirt_memory_overhead: 512Mi
+    # kubevirt_memory_request: 4Gi   # defaults to kubevirt_memory
+    # Optional: tune the SSH readinessProbe (KubeVirt runs this from virt-launcher,
+    # flips the VMI Ready condition to True once sshd is accepting connections).
+    # kubevirt_readiness_probe:
+    #   initial_delay_seconds: 30
+    #   period_seconds: 10
+    #   failure_threshold: 120   # 120 * 10s = 20 min, for very slow Windows first-boots
     # Beaker-specific configuration
     user: centos
     ssh:

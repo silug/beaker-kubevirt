@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `kubevirt_memory_overhead` (default `512Mi`) and `kubevirt_memory_request` options.
+  The VM spec now sets `spec.template.spec.domain.resources.requests/limits.memory`
+  explicitly (guest + overhead for the limit) so Windows guests no longer get
+  OOMKilled by KubeVirt's too-small auto-computed virt-launcher overhead.
+- `wait_for_vm_ready` now inspects the virt-launcher pod each poll and fails
+  fast with a specific reason (OOMKilled, CrashLoopBackOff, ImagePullBackOff,
+  terminal VMI phase, ...) instead of hanging for the full timeout.
+- TCP `readinessProbe` on the guest's SSH port is added to the VM spec by
+  default (for `port-forward` and `nodeport` network modes; skipped for
+  `multus`). `wait_for_vm_ready` now waits for the VMI's `Ready` condition to
+  flip to `True`, so provisioning only hands off to Beaker once sshd is
+  actually accepting connections — no more SSH "connection refused" retries
+  while cloud-init / Windows first-boot is still running. Tunable via
+  `kubevirt_readiness_probe` and opt-out via `kubevirt_readiness_probe_disabled`.
+  When the probe is enabled, `timeout` is auto-raised to fit the probe's
+  failure budget.
 - Initial implementation of KubeVirt hypervisor provider for Beaker
 - Support for VM provisioning using KubeVirt VirtualMachine objects
 - Multiple image source support (PVC, ContainerDisk, DataVolume)
