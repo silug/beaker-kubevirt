@@ -16,6 +16,7 @@
 **/sut.log
 .kube/*
 
-.DS_Store.vscode/
+.DS_Store
+.vscode/
 .ai/
 .claude/
