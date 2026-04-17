@@ -100,6 +100,10 @@ module Beaker
 
       @hosts.each do |host|
         create_vm(host)
+      rescue StandardError, Interrupt => e
+        @logger.error("Error creating VM for host #{host.name}: #{e.message}")
+        cleanup
+        raise e
       end
 
       @hosts.each do |host|
