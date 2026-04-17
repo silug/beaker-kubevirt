@@ -969,7 +969,8 @@ module Beaker
         ssh_options['keys'] = [key_pair[:private_key_path]]
         host['ssh'] = ssh_options
 
-        @logger.info("Configured SSH to use private key: #{key_pair[:private_key_path]}")
+        @logger.info("Configured SSH to use private key #{File.basename(key_pair[:private_key_path])}")
+        @logger.debug("SSH private key full path: #{key_pair[:private_key_path]}")
       else
         @logger.warn('Could not determine private key path, SSH will use default keys')
       end
