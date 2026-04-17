@@ -124,6 +124,36 @@ The gem is ready for:
 - Community feedback and contributions
 - Enhancement based on user needs
 
+## Developer Gotchas
+
+### `Beaker::Host` does not support `key?`
+
+`Beaker::Host` (and subclasses like `PSWindows::Host`) proxy `[]` and `[]=`
+to an internal options hash but do **not** expose `key?`, `fetch`, `dig`, or
+other `Hash` methods. Calling them raises `NoMethodError` at runtime —
+silently passing unit specs that use plain `Hash` fixtures for hosts.
+
+Do not write:
+
+```ruby
+return host['foo'] if host.key?('foo')
+```
+
+Instead, treat `nil` as "unset" so both presence and an explicit `false`
+are preserved:
+
+```ruby
+val = host['foo']
+return val unless val.nil?
+```
+
+See `readiness_probe_disabled?` in `lib/beaker/hypervisor/kubevirt.rb` for
+the canonical pattern, and `vm_ssh_port` for the simpler `host['x'] || default`
+form when `false` isn't a meaningful value. When the distinction between
+"unset" and "explicitly false" matters for a new option, add an acceptance
+or integration-level test — unit tests with `Hash` fixtures will not catch
+the `key?` failure.
+
 ## Integration with Beaker Ecosystem
 
 This implementation follows established Beaker patterns (similar to beaker-google, beaker-aws, etc.) ensuring:

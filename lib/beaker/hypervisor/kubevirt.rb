@@ -822,8 +822,11 @@ module Beaker
     # @param [Host] host The host configuration
     # @return [Boolean]
     def readiness_probe_disabled?(host)
-      return host['kubevirt_readiness_probe_disabled'] if host.key?('kubevirt_readiness_probe_disabled')
-      return @options[:kubevirt_readiness_probe_disabled] if @options.key?(:kubevirt_readiness_probe_disabled)
+      host_val = host['kubevirt_readiness_probe_disabled']
+      return host_val unless host_val.nil?
+
+      opt_val = @options[:kubevirt_readiness_probe_disabled]
+      return opt_val unless opt_val.nil?
 
       (host['kubevirt_network_mode'] || 'port-forward') == 'multus'
     end
