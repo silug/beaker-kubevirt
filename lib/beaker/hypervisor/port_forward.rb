@@ -36,6 +36,12 @@ class KubeVirtPortForwarder
   # The channel byte for the error stream from the server.
   ERROR_CHANNEL = "\x01"
 
+  # Upper bound on how long we'll wait for EventMachine.reactor_running? to
+  # become true after kicking off EventMachine.run in its own thread. Healthy
+  # startup is well under 100ms; five seconds is only reached when something
+  # is wrong (native-ext load failure, incompatible libcrypto, etc.).
+  REACTOR_STARTUP_TIMEOUT = 5
+
   # Class-level tracking of EventMachine reactor ownership
   # EventMachine has a single global reactor, so we need to track which
   # forwarder instance started it to avoid stopping it prematurely
@@ -93,8 +99,7 @@ class KubeVirtPortForwarder
 
     if start_reactor
       @reactor_thread = Thread.new { EventMachine.run }
-      # Wait for the reactor to be running
-      sleep 0.1 until EventMachine.reactor_running?
+      wait_for_reactor_ready
       @logger.debug('Started EventMachine reactor (owned by this forwarder)')
     else
       @logger.debug('Using existing EventMachine reactor (owned by another forwarder)')
@@ -209,6 +214,25 @@ class KubeVirtPortForwarder
   end
 
   private
+
+  # Block until EventMachine.reactor_running? becomes true, or fail fast
+  # if the reactor thread died during startup or the deadline elapses.
+  def wait_for_reactor_ready
+    deadline = Time.now + REACTOR_STARTUP_TIMEOUT
+    until EventMachine.reactor_running?
+      unless @reactor_thread.alive?
+        begin
+          @reactor_thread.value # re-raises the thread's exception, if any
+        rescue StandardError => e
+          raise "EventMachine reactor thread exited during startup: #{e.class}: #{e.message}"
+        end
+        raise 'EventMachine reactor thread exited during startup with no exception'
+      end
+      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if Time.now > deadline
+
+      sleep 0.1
+    end
+  end
 
   # Handles a single client connection from start to finish.
   # @param client_socket [TCPSocket] The socket connected to the client.
