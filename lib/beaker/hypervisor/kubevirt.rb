@@ -187,6 +187,9 @@ module Beaker
       @kubevirt_helper.cleanup_secrets(@test_group_identifier)
       # Cleanup services associated with the test group
       @kubevirt_helper.cleanup_services(@test_group_identifier)
+      # Finally unlink the kubeconfig-derived tempfiles — must be last
+      # because the preceding cleanups still need them for auth.
+      @kubevirt_helper.cleanup_temp_files if @kubevirt_helper.respond_to?(:cleanup_temp_files)
     end
 
     ##

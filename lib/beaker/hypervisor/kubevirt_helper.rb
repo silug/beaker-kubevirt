@@ -271,6 +271,23 @@ module Beaker
     end
 
     ##
+    # Unlink the kubeconfig-derived cert/key tempfiles kept alive for the
+    # process lifetime. Safe to call after all API operations that need the
+    # files have completed.
+    def cleanup_temp_files
+      return unless @temp_files
+
+      @temp_files.each do |file|
+        path = file.path
+        file.close unless file.closed?
+        file.unlink
+      rescue StandardError => e
+        @logger&.warn("Failed to unlink temp file #{path}: #{e.message}")
+      end
+      @temp_files.clear
+    end
+
+    ##
     # Get a cluster node IP address
     # @return [String] Node IP address
     def node_ip
