@@ -1283,7 +1283,7 @@ RSpec.describe KubeVirtPortForwarder do
       expect(all_log_messages.size).to be > 0
 
       # Verify the WebSocket URL was logged (shows we're testing the right code path)
-      url_logged = all_log_messages.any? { |msg| msg.include?('Constructed WebSocket URL') }
+      url_logged = all_log_messages.any? { |msg| msg.include?('WebSocket URL:') }
       expect(url_logged).to be true
     end
 
@@ -1341,6 +1341,101 @@ RSpec.describe KubeVirtPortForwarder do
       end
 
       expect(forwarder.state).to eq(:stopped)
+    end
+  end
+
+  describe '#convert_ssl_options_to_tls' do
+    it 'converts ca_file to root_cert_file for Faye::WebSocket' do
+      ssl_options = { ca_file: '/tmp/ca-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:root_cert_file]).to eq('/tmp/ca-cert.pem')
+    end
+
+    it 'does not set cert_chain_file for CA certificate' do
+      # cert_chain_file is for client certs, not CA certs
+      ssl_options = { ca_file: '/tmp/ca-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:cert_chain_file]).to be_nil
+    end
+
+    it 'converts verify_ssl false to verify_peer false' do
+      ssl_options = { verify_ssl: false }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to be(false)
+    end
+
+    it 'converts OpenSSL::SSL::VERIFY_PEER (1) to boolean true' do
+      ssl_options = { verify_ssl: 1 }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to be(true)
+    end
+
+    it 'converts OpenSSL::SSL::VERIFY_NONE (0) to boolean false' do
+      ssl_options = { verify_ssl: 0 }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:verify_peer]).to be(false)
+    end
+
+    it 'enables verification with CA file and verify_ssl set' do
+      # With both CA file and verification enabled, Faye::WebSocket will verify properly
+      ssl_options = { ca_file: '/tmp/ca-cert.pem', verify_ssl: 1 }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:root_cert_file]).to eq('/tmp/ca-cert.pem')
+      expect(tls_options[:verify_peer]).to be(true)
+    end
+
+    it 'defaults to verification enabled when only CA file is present' do
+      # When CA file is present without explicit verify_ssl, we explicitly enable verification
+      ssl_options = { ca_file: '/tmp/ca-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:root_cert_file]).to eq('/tmp/ca-cert.pem')
+      expect(tls_options[:verify_peer]).to be(true) # Explicitly enabled with CA cert
+    end
+
+    it 'passes through client_key as private_key_file' do
+      ssl_options = { client_key: '/tmp/client-key.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:private_key_file]).to eq('/tmp/client-key.pem')
+    end
+
+    it 'passes through client_cert as cert_chain_file' do
+      ssl_options = { client_cert: '/tmp/client-cert.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:cert_chain_file]).to eq('/tmp/client-cert.pem')
+    end
+
+    it 'handles combined ca_file and client_cert separately' do
+      # CA cert goes to root_cert_file, client cert to cert_chain_file
+      ssl_options = { ca_file: '/tmp/ca.pem', client_cert: '/tmp/client.pem' }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options[:root_cert_file]).to eq('/tmp/ca.pem')
+      expect(tls_options[:cert_chain_file]).to eq('/tmp/client.pem')
+    end
+
+    it 'returns empty hash for nil ssl_options' do
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, nil)
+      expect(tls_options).to eq({})
+    end
+
+    it 'returns empty hash for empty ssl_options' do
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, {})
+      expect(tls_options).to eq({})
+    end
+
+    it 'handles complete ssl_options with CA and client certs' do
+      ssl_options = {
+        ca_file: '/tmp/ca.pem',
+        verify_ssl: 1,
+        client_key: '/tmp/key.pem',
+        client_cert: '/tmp/cert.pem',
+      }
+      tls_options = forwarder.send(:convert_ssl_options_to_tls, ssl_options)
+      expect(tls_options).to include(
+        root_cert_file: '/tmp/ca.pem',
+        verify_peer: true,
+        cert_chain_file: '/tmp/cert.pem',
+        private_key_file: '/tmp/key.pem',
+      )
     end
   end
 end

@@ -17,6 +17,12 @@ module Beaker
       @kubecontext = options[:kubecontext] || ENV.fetch('KUBECONTEXT', nil)
       @logger = options[:logger]
 
+      # Store original SSL options for port forwarding (before kubeclient processes them)
+      @original_ssl_options = nil
+
+      # Keep temp files alive to prevent garbage collection
+      @temp_files = []
+
       # Allow injection of clients for testing
       @k8s_client = options[:k8s_client]
       @kubevirt_client = options[:kubevirt_client]
@@ -24,6 +30,9 @@ module Beaker
       # Only setup clients if not provided (for testing)
       return if @k8s_client && @kubevirt_client
 
+      # Manually extract SSL options with CA file by parsing kubeconfig directly
+      # (Kubeclient context doesn't expose the raw CA file path/data)
+      @original_ssl_options = extract_ssl_from_kubeconfig
       setup_kubernetes_client
       setup_kubevirt_client
     end
@@ -67,6 +76,18 @@ module Beaker
     end
 
     ##
+    # Get the virt-launcher pod backing a VMI.
+    # @param [String] vmi_name The VMI name (== VM name)
+    # @return [Hash, nil] pod object, or nil if not yet scheduled
+    def get_virt_launcher_pod(vmi_name)
+      pods = @k8s_client.get_pods(namespace: @namespace,
+                                  label_selector: "kubevirt.io/vm=#{vmi_name}")
+      pods.first
+    rescue Kubeclient::ResourceNotFoundError
+      nil
+    end
+
+    ##
     # Delete a virtual machine
     # @param [String] vm_name The VM name
     def delete_vm(vm_name)
@@ -81,14 +102,33 @@ module Beaker
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_vms(test_group_identifier)
       @logger.info("Cleaning up VMs for test group: #{test_group_identifier}")
+      label_selector = "beaker/test-group=#{test_group_identifier}"
+      @logger.debug("Using label selector: #{label_selector}")
+
       vms = @kubevirt_client.get_virtual_machines(namespace: @namespace,
-                                                  label_selector: "beaker/test-group=#{test_group_identifier}")
+                                                  label_selector: label_selector)
+      @logger.info("Found #{vms.length} VM(s) with label beaker/test-group=#{test_group_identifier}")
+
       vms.each do |vm|
-        vm_name = vm.metadata.respond_to?(:name) ? vm.metadata.name : vm.metadata['name']
+        # Extract VM name - access hash-style to avoid RSpec metadata collision
+        vm_metadata = vm[:metadata] || vm['metadata']
+        vm_name = vm_metadata[:name] || vm_metadata['name'] if vm_metadata
+
+        unless vm_name && !vm_name.empty?
+          @logger.error('Cannot delete VM with empty or nil name.')
+          @logger.error("VM structure: #{vm.inspect[0..1000]}")
+          next
+        end
+
+        vm_labels = vm_metadata[:labels] || vm_metadata['labels'] if vm_metadata
+        @logger.debug("Deleting VM #{vm_name} with labels: #{vm_labels.inspect}")
         @kubevirt_client.delete_virtual_machine(vm_name, @namespace)
-        @logger.debug("Deleted VM #{vm_name} for test group #{test_group_identifier}")
+        @logger.info("Deleted VM #{vm_name}")
       rescue Kubeclient::ResourceNotFoundError
-        @logger.debug("VM #{vm_name} not found during cleanup for test group #{test_group_identifier}")
+        @logger.debug("VM #{vm_name} not found during cleanup")
+      rescue StandardError => e
+        @logger.error("Error deleting VM #{vm_name}: #{e.message}")
+        @logger.error("Backtrace: #{e.backtrace[0..5].join("\n")}")
       end
     end
 
@@ -97,14 +137,32 @@ module Beaker
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_secrets(test_group_identifier)
       @logger.info("Cleaning up secrets for test group: #{test_group_identifier}")
+      label_selector = "beaker/test-group=#{test_group_identifier}"
+      @logger.debug("Using label selector: #{label_selector}")
+
       secrets = @k8s_client.get_secrets(namespace: @namespace,
-                                        label_selector: "beaker/test-group=#{test_group_identifier}")
+                                        label_selector: label_selector)
+      @logger.info("Found #{secrets.length} secret(s) with label beaker/test-group=#{test_group_identifier}")
+
       secrets.each do |secret|
-        secret_name = secret.metadata.respond_to?(:name) ? secret.metadata.name : secret.metadata['name']
+        # Extract secret name - access hash-style to avoid RSpec metadata collision
+        secret_metadata = secret[:metadata] || secret['metadata']
+        secret_name = secret_metadata[:name] || secret_metadata['name'] if secret_metadata
+
+        unless secret_name && !secret_name.empty?
+          @logger.error('Cannot delete secret with empty or nil name.')
+          @logger.error("Secret structure: #{secret.inspect[0..1000]}")
+          next
+        end
+
+        secret_labels = secret_metadata[:labels] || secret_metadata['labels'] if secret_metadata
+        @logger.debug("Deleting secret #{secret_name} with labels: #{secret_labels.inspect}")
         @k8s_client.delete_secret(secret_name, @namespace)
-        @logger.debug("Deleted secret #{secret_name} for test group #{test_group_identifier}")
+        @logger.info("Deleted secret #{secret_name}")
       rescue Kubeclient::ResourceNotFoundError
-        @logger.debug("Secret #{secret_name} not found during cleanup for test group #{test_group_identifier}")
+        @logger.debug("Secret #{secret_name} not found during cleanup")
+      rescue StandardError => e
+        @logger.error("Error deleting secret #{secret_name}: #{e.message}")
       end
     end
 
@@ -113,14 +171,32 @@ module Beaker
     # @param [String] test_group_identifier The identifier for the test group
     def cleanup_services(test_group_identifier)
       @logger.info("Cleaning up services for test group: #{test_group_identifier}")
+      label_selector = "beaker/test-group=#{test_group_identifier}"
+      @logger.debug("Using label selector: #{label_selector}")
+
       services = @k8s_client.get_services(namespace: @namespace,
-                                          label_selector: "beaker/test-group=#{test_group_identifier}")
+                                          label_selector: label_selector)
+      @logger.info("Found #{services.length} service(s) with label beaker/test-group=#{test_group_identifier}")
+
       services.each do |service|
-        service_name = service.metadata.respond_to?(:name) ? service.metadata.name : service.metadata['name']
+        # Extract service name - access hash-style to avoid RSpec metadata collision
+        service_metadata = service[:metadata] || service['metadata']
+        service_name = service_metadata[:name] || service_metadata['name'] if service_metadata
+
+        unless service_name && !service_name.empty?
+          @logger.error('Cannot delete service with empty or nil name.')
+          @logger.error("Service structure: #{service.inspect[0..1000]}")
+          next
+        end
+
+        service_labels = service_metadata[:labels] || service_metadata['labels'] if service_metadata
+        @logger.debug("Deleting service #{service_name} with labels: #{service_labels.inspect}")
         @k8s_client.delete_service(service_name, @namespace)
-        @logger.debug("Deleted service #{service_name} for test group #{test_group_identifier}")
+        @logger.info("Deleted service #{service_name}")
       rescue Kubeclient::ResourceNotFoundError
-        @logger.debug("Service #{service_name} not found during cleanup for test group #{test_group_identifier}")
+        @logger.debug("Service #{service_name} not found during cleanup")
+      rescue StandardError => e
+        @logger.error("Error deleting service #{service_name}: #{e.message}")
       end
     end
 
@@ -140,6 +216,7 @@ module Beaker
         local_port: local_port,
         logger: @logger,
         on_error: method(:forwarder_error_handler),
+        ssl_options: @original_ssl_options,
       )
 
       # Start the port forwarder in a background thread
@@ -214,49 +291,41 @@ module Beaker
       end
     end
 
-    ##
-    # Get service by name
-    # @param [String] service_name The service name
-    # @return [Hash] Service object
-    def get_service(service_name)
-      @k8s_client.get_service(service_name, @namespace)
-    rescue Kubeclient::ResourceNotFoundError
-      nil
-    end
-
     private
 
     ##
     # Setup Kubernetes API client
     def setup_kubernetes_client
-      config = Kubeclient::Config.read(@kubeconfig_path)
+      config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
       context_config = config.context(@kubecontext)
+
       @k8s_client = Kubeclient::Client.new(
         context_config.api_endpoint,
-        'v1',
+        context_config.api_version,
         ssl_options: context_config.ssl_options,
         auth_options: context_config.auth_options,
       )
     rescue StandardError => e
       # For testing or when Kubeclient can't parse, fall back to manual parsing
-      @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+      @logger&.warn("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
       setup_kubernetes_client_manual
     end
 
     ##
     # Setup KubeVirt API client
     def setup_kubevirt_client
-      config = Kubeclient::Config.read(@kubeconfig_path)
+      config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
       context_config = config.context(@kubecontext)
+
       @kubevirt_client = Kubeclient::Client.new(
         "#{context_config.api_endpoint}/apis/kubevirt.io",
-        'v1',
+        context_config.api_version,
         ssl_options: context_config.ssl_options,
         auth_options: context_config.auth_options,
       )
     rescue StandardError => e
       # For testing or when Kubeclient can't parse, fall back to manual parsing
-      @logger&.debug("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
+      @logger&.warn("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
       setup_kubevirt_client_manual
     end
 
@@ -267,6 +336,9 @@ module Beaker
       context_config = get_context_config(config)
       ssl_options = setup_ssl_options(context_config)
       auth_options = setup_auth_options(context_config)
+
+      # Store original SSL options before kubeclient processes them
+      @original_ssl_options = ssl_options.dup
 
       @k8s_client = Kubeclient::Client.new(
         context_config['cluster']['server'],
@@ -284,6 +356,9 @@ module Beaker
       ssl_options = setup_ssl_options(context_config)
       auth_options = setup_auth_options(context_config)
 
+      # Store original SSL options before kubeclient processes them
+      @original_ssl_options = ssl_options.dup
+
       kubevirt_endpoint = "#{context_config['cluster']['server']}/apis/kubevirt.io"
       @kubevirt_client = Kubeclient::Client.new(
         kubevirt_endpoint,
@@ -297,9 +372,11 @@ module Beaker
     # Load kubeconfig file
     # @return [Hash] Parsed kubeconfig
     def load_kubeconfig
+      return @kubeconfig_data if @kubeconfig_data
       raise "Kubeconfig file not found: #{@kubeconfig_path}" unless File.exist?(@kubeconfig_path)
 
-      YAML.safe_load_file(@kubeconfig_path)
+      @kubeconfig_data = YAML.safe_load_file(@kubeconfig_path)
+      @kubeconfig_data
     end
 
     ##
@@ -335,9 +412,14 @@ module Beaker
     # @param [String] content File content
     # @return [String] Path to temporary file
     def write_temp_file(prefix, content)
-      file = Tempfile.new(prefix)
+      file = Tempfile.new([prefix, '.pem'])
+      file.binmode
       file.write(content)
+      file.flush
       file.close
+      # Keep reference to prevent garbage collection and file deletion
+      @temp_files << file
+      @logger&.debug("Created temp file: #{file.path} (#{content.bytesize} bytes)")
       file.path
     end
 
@@ -354,6 +436,18 @@ module Beaker
       else
         obj
       end
+    end
+
+    ##
+    # Extract SSL options directly from kubeconfig file
+    # This preserves the :ca_file path before kubeclient converts it to :cert_store
+    # @return [Hash] SSL options with :ca_file preserved
+    def extract_ssl_from_kubeconfig
+      config = load_kubeconfig
+      context_config = get_context_config(config)
+      ssl_options = setup_ssl_options(context_config)
+      @logger&.debug("Extracted SSL options from kubeconfig: #{ssl_options.keys.join(', ')}")
+      ssl_options
     end
 
     ##
@@ -387,6 +481,12 @@ module Beaker
 
       if user_config['token']
         auth_options[:bearer_token] = user_config['token']
+      elsif user_config['tokenFile']
+        token_file_path = user_config['tokenFile']
+        raise "Token file not found: #{token_file_path}" unless File.exist?(token_file_path)
+
+        auth_options[:bearer_token] = File.read(token_file_path).strip
+
       elsif user_config['client-certificate-data'] && user_config['client-key-data']
         client_cert = Base64.strict_decode64(user_config['client-certificate-data'])
         client_key = Base64.strict_decode64(user_config['client-key-data'])
