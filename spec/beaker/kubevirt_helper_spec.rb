@@ -220,6 +220,28 @@ RSpec.describe Beaker::KubevirtHelper do
     end
   end
 
+  describe '#create_nodeport_service' do
+    let(:k8s_client) { double('k8s_client') }
+    let(:opts) { options.merge(k8s_client: k8s_client) }
+    let(:helper) { described_class.new(opts) }
+
+    before do
+      allow(k8s_client).to receive(:create_service) { |spec| spec }
+    end
+
+    it 'tags the service with both beaker/vm and beaker/test-group labels' do
+      spec = helper.create_nodeport_service('my-vm', 'my-vm-ssh', 'beaker-abcd1234')
+      labels = spec.dig(:metadata, :labels)
+      expect(labels).to include('beaker/vm': 'my-vm', 'beaker/test-group': 'beaker-abcd1234')
+    end
+
+    it 'omits the test-group label when none is provided' do
+      spec = helper.create_nodeport_service('my-vm', 'my-vm-ssh')
+      labels = spec.dig(:metadata, :labels)
+      expect(labels).to eq('beaker/vm': 'my-vm')
+    end
+  end
+
   describe 'manual kubeconfig parsing fallback' do
     let(:clients) do
       {
