@@ -173,7 +173,7 @@ module Beaker
             sleep delay
           end
         rescue Timeout::Error
-          @logger.warn("Port-forwarder for host #{host_name} did not stop in time: ")
+          @logger.warn("Port-forwarder for host #{host_name} did not stop in time")
           raise
         rescue StandardError => e
           @logger.error("Error stopping port-forwarder for host #{host_name}: #{e}")
@@ -906,12 +906,10 @@ module Beaker
       host['ssh'] = ssh_options
 
       @logger.debug("Setting up port-forward for VM #{vm_name} from localhost:#{local_port} to VM port #{host_port}")
-      @logger.info("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}")
+      @logger.debug("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}")
 
       # Setup port forwarding from local_port to host_port (22) on the VM
       host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, host_port, local_port)
-
-      @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
     end
 
     ##
