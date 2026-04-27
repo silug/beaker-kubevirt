@@ -184,12 +184,15 @@ module Beaker
       end
 
       @logger.info("Cleaning up resources in namespace: #{@namespace}")
-      # Cleanup VMs associated with the test group
-      @kubevirt_helper.cleanup_vms(@test_group_identifier)
-      # Cleanup secrets associated with the test group
-      @kubevirt_helper.cleanup_secrets(@test_group_identifier)
-      # Cleanup services associated with the test group
-      @kubevirt_helper.cleanup_services(@test_group_identifier)
+      begin
+        safe_cleanup('cleaning up VMs') { @kubevirt_helper.cleanup_vms(@test_group_identifier) }
+        safe_cleanup('cleaning up secrets') { @kubevirt_helper.cleanup_secrets(@test_group_identifier) }
+        safe_cleanup('cleaning up services') { @kubevirt_helper.cleanup_services(@test_group_identifier) }
+      ensure
+        # Finally unlink the kubeconfig-derived tempfiles — must be last
+        # because the preceding cleanups still need them for auth.
+        @kubevirt_helper.cleanup_temp_files
+      end
     end
 
     ##
@@ -235,6 +238,15 @@ module Beaker
         @logger.error("Error during at_exit cleanup: #{e.message}")
         @logger.debug(e.backtrace.join("\n"))
       end
+    end
+
+    ##
+    # Execute a cleanup operation, logging any errors without re-raising them.
+    # @param [String] description A short description for the error message
+    def safe_cleanup(description)
+      yield
+    rescue StandardError => e
+      @logger.error("Error #{description}: #{e.message}")
     end
 
     ##

@@ -100,6 +100,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_vms)
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
+        allow(kubevirt_helper).to receive(:cleanup_temp_files)
         hypervisor.cleanup
       end
 
@@ -113,6 +114,32 @@ RSpec.describe Beaker::Kubevirt do
 
       it 'cleans up services' do
         expect(kubevirt_helper).to have_received(:cleanup_services).with(anything)
+      end
+
+      it 'cleans up temp files' do
+        expect(kubevirt_helper).to have_received(:cleanup_temp_files)
+      end
+    end
+
+    context 'when an earlier cleanup step raises an error' do
+      let(:hypervisor) { described_class.new(hosts, options) }
+
+      before do
+        allow(kubevirt_helper).to receive(:cleanup_vms).and_raise(StandardError, 'VM cleanup failed')
+        allow(kubevirt_helper).to receive(:cleanup_secrets)
+        allow(kubevirt_helper).to receive(:cleanup_services)
+        allow(kubevirt_helper).to receive(:cleanup_temp_files)
+      end
+
+      it 'still cleans up temp files when cleanup_vms raises' do
+        hypervisor.cleanup
+        expect(kubevirt_helper).to have_received(:cleanup_temp_files)
+      end
+
+      it 'still cleans up remaining resources when cleanup_vms raises' do
+        hypervisor.cleanup
+        expect(kubevirt_helper).to have_received(:cleanup_secrets)
+        expect(kubevirt_helper).to have_received(:cleanup_services)
       end
     end
 
@@ -139,6 +166,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_vms)
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
+        allow(kubevirt_helper).to receive(:cleanup_temp_files)
         hypervisor_with_port_forward.cleanup(delay: 0.25)
       end
 
@@ -172,6 +200,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_vms)
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
+        allow(kubevirt_helper).to receive(:cleanup_temp_files)
         hypervisor_with_port_forward.cleanup
       end
 
@@ -205,6 +234,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_vms)
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
+        allow(kubevirt_helper).to receive(:cleanup_temp_files)
       end
 
       it 'raises a timeout error' do
@@ -1769,6 +1799,7 @@ RSpec.describe Beaker::Kubevirt do
       allow(kubevirt_helper).to receive(:cleanup_vms)
       allow(kubevirt_helper).to receive(:cleanup_secrets)
       allow(kubevirt_helper).to receive(:cleanup_services)
+      allow(kubevirt_helper).to receive(:cleanup_temp_files)
     end
 
     describe '#initialize' do
@@ -1803,6 +1834,7 @@ RSpec.describe Beaker::Kubevirt do
         expect(kubevirt_helper).to have_received(:cleanup_vms).once
         expect(kubevirt_helper).to have_received(:cleanup_secrets).once
         expect(kubevirt_helper).to have_received(:cleanup_services).once
+        expect(kubevirt_helper).to have_received(:cleanup_temp_files).once
       end
 
       it 'calls cleanup_impl to perform actual cleanup' do
@@ -1898,6 +1930,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_vms)
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
+        allow(kubevirt_helper).to receive(:cleanup_temp_files)
       end
 
       it 'cleanup_on_exit does not perform cleanup' do
@@ -1922,6 +1955,7 @@ RSpec.describe Beaker::Kubevirt do
         expect(kubevirt_helper).to have_received(:cleanup_vms)
         expect(kubevirt_helper).to have_received(:cleanup_secrets)
         expect(kubevirt_helper).to have_received(:cleanup_services)
+        expect(kubevirt_helper).to have_received(:cleanup_temp_files)
       end
 
       it 'cleanup_on_exit logs at_exit cleanup message' do
@@ -1969,6 +2003,7 @@ RSpec.describe Beaker::Kubevirt do
         expect(kubevirt_helper).to have_received(:cleanup_vms).once
         expect(kubevirt_helper).to have_received(:cleanup_secrets).once
         expect(kubevirt_helper).to have_received(:cleanup_services).once
+        expect(kubevirt_helper).to have_received(:cleanup_temp_files).once
       end
     end
 
