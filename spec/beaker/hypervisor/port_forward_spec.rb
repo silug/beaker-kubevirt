@@ -666,6 +666,91 @@ RSpec.describe KubeVirtPortForwarder do
         # Check that we don't have triple slashes or double slashes in the path
         expect(captured_url).not_to match(%r{://.*//})
       end
+
+      it 'percent-encodes namespace and vmi_name path separators in the URL' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/api'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'my/namespace',
+          vmi_name: 'my/vmi',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_url = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |url, _protocols, _options|
+          captured_url = url
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        expect(captured_url).to include('/namespaces/my%2Fnamespace/')
+        expect(captured_url).to include('/virtualmachineinstances/my%2Fvmi/')
+        expect(captured_url).not_to include('/namespaces/my/namespace/')
+        expect(captured_url).not_to include('/virtualmachineinstances/my/vmi/')
+      end
+
+      it 'raises ArgumentError for a non-numeric target_port' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/api'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 'abc',
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        expect do
+          forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+        end.to raise_error(ArgumentError, /Invalid target port/)
+      end
+
+      it 'raises ArgumentError for target_port out of valid range' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/api'),
+          auth_options: { bearer_token: 'test-token' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 99_999,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        expect do
+          forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+        end.to raise_error(ArgumentError, /Invalid target port/)
+      end
     end
 
     # Fix: Bearer token only set when present
