@@ -425,8 +425,10 @@ module Beaker
     end
 
     ##
-    # Sanitize a string to meet Kubernetes' label-value constraints
-    # (1..63 chars, [a-zA-Z0-9_.-], must start and end alphanumeric).
+    # Sanitize a string to meet Kubernetes' label-value constraints:
+    # label values may be empty; otherwise they may be up to 63 characters,
+    # contain only [a-zA-Z0-9_.-], and must start and end with an
+    # alphanumeric character.
     # Unlike sanitize_k8s_name this preserves dots, underscores, and case —
     # labels allow them and losing that information makes `kubectl -l` lookups
     # by hostname fail.
