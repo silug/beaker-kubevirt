@@ -11,9 +11,10 @@ require 'json'
 # It handles the entire lifecycle of discovering the VMI, establishing a
 # WebSocket connection via the Kubernetes API, and proxying data.
 #
-# It is designed to be resilient, handling retries internally so that a client
-# (like Beaker's SSH client) can connect to the local port and simply wait
-# until the VMI is ready.
+# Each accepted client connection makes a single attempt to open the WebSocket
+# to the VMI. If that attempt fails, the client socket is closed so the caller
+# (e.g. Beaker's SSH client) sees the connection failure promptly and learns
+# the real state of the port, rather than waiting behind an internal retry loop.
 #
 # See the bottom of this file for a complete usage example.
 #
@@ -51,7 +52,8 @@ class KubeVirtPortForwarder
   # @param local_port [Integer] The local TCP port to listen on.
   # @param logger [Logger] An optional logger instance.
   # @param on_error [Proc] An optional callback (proc or lambda) to handle errors.
-  def initialize(kube_client:, namespace:, vmi_name:, target_port:, local_port:, logger: nil, on_error: nil)
+  # @param ssl_options [Hash] Optional SSL options to use instead of kube_client's (to preserve :ca_file)
+  def initialize(kube_client:, namespace:, vmi_name:, target_port:, local_port:, logger: nil, on_error: nil, ssl_options: nil)
     @kube_client = kube_client
     @namespace = namespace
     @vmi_name = vmi_name
@@ -59,6 +61,7 @@ class KubeVirtPortForwarder
     @local_port = local_port
     @on_error = on_error
     @logger = logger || Logger.new($stdout, level: :info)
+    @ssl_options = ssl_options # Use provided ssl_options if available
 
     @state = :new
     @mutex = Mutex.new
@@ -106,14 +109,15 @@ class KubeVirtPortForwarder
         begin
           # Accept a connection from a client (e.g., Beaker's SSH).
           client_socket = @server.accept
-          @logger.debug("Accepted connection from #{client_socket.peeraddr.join(':')}")
+          peer_ip, peer_port = client_socket.peeraddr(false).values_at(3, 1)
+          @logger.debug("Accepted connection from #{peer_ip}:#{peer_port}")
 
           # Handle the entire KubeVirt connection lifecycle in a new thread.
           conn_thread = Thread.new { handle_connection(client_socket) }
           @mutex.synchronize { @connection_threads << conn_thread }
         rescue IOError
           # This is expected when @server.close is called in stop()
-          @logger.info("Server on port #{@local_port} is shutting down.")
+          @logger.debug("Server on port #{@local_port} stopped accepting connections.")
           break
         end
       end
@@ -210,10 +214,10 @@ class KubeVirtPortForwarder
   def handle_connection(client_socket)
     websocket = establish_websocket_with_retry(client_socket, retries: 1)
     if websocket
-      @logger.info('Connection to VMI established. Proxying traffic.')
+      @logger.debug('Connection to VMI established, proxying traffic')
       proxy_traffic(client_socket, websocket)
     else
-      @logger.error('Failed to establish connection to VMI after multiple retries. Closing client socket.')
+      @logger.error('Failed to establish connection to VMI. Closing client socket.')
       client_socket.close
     end
   rescue IOError => e
@@ -241,8 +245,9 @@ class KubeVirtPortForwarder
     @mutex.synchronize { @connection_threads.delete(Thread.current) }
   end
 
-  # Attempts to establish the WebSocket connection, retrying on failure.
-  # This is the core of the "wait for VM" logic.
+  # Attempts to establish the WebSocket connection. The retry loop is retained
+  # for flexibility, but callers pass retries: 1 so a failure is reported to
+  # the client immediately rather than masked by internal waiting.
   # @param client_socket [TCPSocket] The client socket, used to check if the client is still connected.
   # @return [Faye::WebSocket::Client, nil] The connected WebSocket client or nil if it fails.
   def establish_websocket_with_retry(client_socket, retries: 10, delay: 5)
@@ -255,25 +260,31 @@ class KubeVirtPortForwarder
     base_url += path_prefix unless path_prefix.empty? || path_prefix == '/'
     base_ws_url = base_url.sub(/^http/, 'ws')
     url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{@namespace}/virtualmachineinstances/#{@vmi_name}/portforward/#{@target_port}"
-    @logger.debug("Constructed WebSocket URL: #{url}")
+    @logger.debug("WebSocket URL: #{url}")
 
     auth_token = @kube_client.auth_options[:bearer_token]
+    @logger.debug("Using auth token: #{auth_token ? 'present' : 'absent'}")
     headers = {}
     headers['Authorization'] = "Bearer #{auth_token}" if auth_token && !auth_token.empty?
 
-    retries.times do |i|
+    # Convert kubeclient SSL options to Faye::WebSocket/EventMachine TLS options
+    # Use provided ssl_options if available (to preserve :ca_file), otherwise use kube_client's
+    ssl_opts = @ssl_options || @kube_client.ssl_options
+    tls_options = convert_ssl_options_to_tls(ssl_opts)
+
+    retries.times do |_i|
       return nil if client_socket.closed?
 
-      @logger.info("Attempt #{i + 1}: Connecting to VMI '#{@vmi_name}'...")
+      @logger.debug("Opening WebSocket to VMI '#{@vmi_name}' port #{@target_port}")
 
       connection_status_q = Queue.new
 
       EventMachine.schedule do
         protocols = [PLAIN_STREAM_PROTOCOL]
-        ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: @kube_client.ssl_options)
+        ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: tls_options)
 
         ws.on :open do |_event|
-          @logger.debug("WebSocket connection opened. Negotiated protocol: '#{ws.protocol}'.")
+          @logger.debug("WebSocket open to VMI '#{@vmi_name}' (protocol: #{ws.protocol || 'none'})")
           connection_status_q.push(ws)
         end
 
@@ -281,7 +292,7 @@ class KubeVirtPortForwarder
         # to provide a more specific reason for the failure.
         ws.on :close do |event|
           if event.code == 1000 # Normal closure
-            @logger.info('WebSocket connection closed normally.')
+            @logger.debug('WebSocket connection closed normally.')
           else
             err_msg = "WebSocket closed unexpectedly. Code: #{event.code}, Reason: #{event.reason}"
 
@@ -316,9 +327,8 @@ class KubeVirtPortForwarder
 
       return result if result.is_a?(Faye::WebSocket::Client)
 
-      # Success!
       unless retries == 1
-        @logger.warn("Attempt #{i + 1} failed. Retrying in #{delay} seconds...")
+        @logger.warn("WebSocket connect attempt failed. Retrying in #{delay} seconds...")
         sleep delay
       end
     end
@@ -331,9 +341,9 @@ class KubeVirtPortForwarder
   def proxy_traffic(client_socket, websocket)
     use_channels = (websocket.protocol == STREAM_PROTOCOL)
     if use_channels
-      @logger.info("Using multiplexed stream protocol: #{STREAM_PROTOCOL}")
+      @logger.debug("Using multiplexed stream protocol: #{STREAM_PROTOCOL}")
     else
-      @logger.info("Using raw stream protocol (negotiated: '#{websocket.protocol || 'none'}')")
+      @logger.debug("Using raw stream protocol (negotiated: '#{websocket.protocol || 'none'}')")
     end
 
     # Mutex to synchronize access to client_socket from multiple threads
@@ -402,7 +412,7 @@ class KubeVirtPortForwarder
     end
 
     websocket.on :close do |event|
-      @logger.info("WebSocket connection closed. Code: #{event.code}, Reason: #{event.reason}")
+      @logger.debug("WebSocket connection closed. Code: #{event.code}, Reason: #{event.reason}")
       socket_mutex.synchronize do
         client_socket.close
       rescue StandardError
@@ -443,4 +453,48 @@ class KubeVirtPortForwarder
     true
   end
   # rubocop:enable Naming/PredicateMethod
+
+  # Convert kubeclient SSL options to Faye::WebSocket/EventMachine TLS options.
+  # @param ssl_options [Hash] The SSL options from kubeclient
+  # @return [Hash] TLS options compatible with Faye::WebSocket::Client
+  def convert_ssl_options_to_tls(ssl_options)
+    return {} if ssl_options.nil? || ssl_options.empty?
+
+    tls_options = {}
+
+    # Faye::WebSocket (built on EventMachine) supports custom CA certificates via the
+    # :root_cert_file option. This enables proper SSL verification for in-cluster connections
+    # with self-signed certificates.
+    #
+    # Note: :cert_chain_file is for client certificates, :root_cert_file is for CA certs
+
+    # Pass CA certificate file for server verification
+    if ssl_options[:ca_file]
+      tls_options[:root_cert_file] = ssl_options[:ca_file]
+      @logger.debug("Using CA certificate: #{ssl_options[:ca_file]}")
+
+      # Explicitly enable verification when we have a CA cert, unless explicitly disabled
+      tls_options[:verify_peer] = true unless ssl_options.key?(:verify_ssl) && !ssl_options[:verify_ssl]
+    end
+
+    # Handle explicit SSL verification setting
+    # Faye::WebSocket uses :verify_peer (boolean), while kubeclient uses :verify_ssl (may be OpenSSL constant)
+    if ssl_options.key?(:verify_ssl)
+      verify_value = ssl_options[:verify_ssl]
+      # Convert OpenSSL constants to boolean
+      # OpenSSL::SSL::VERIFY_NONE = 0, OpenSSL::SSL::VERIFY_PEER = 1
+      tls_options[:verify_peer] = if verify_value.is_a?(Integer)
+                                    (verify_value != 0)
+                                  else
+                                    verify_value ? true : false
+                                  end
+      @logger.debug("SSL verification: #{[false, 0].include?(verify_value) ? 'disabled' : 'enabled'}")
+    end
+
+    # Pass through client certificates if present (for mutual TLS authentication)
+    tls_options[:private_key_file] = ssl_options[:client_key] if ssl_options[:client_key]
+    tls_options[:cert_chain_file] = ssl_options[:client_cert] if ssl_options[:client_cert]
+
+    tls_options
+  end
 end

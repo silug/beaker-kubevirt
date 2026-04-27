@@ -17,3 +17,6 @@
 .kube/*
 
 .DS_Store
+.vscode/
+.ai/
+.claude/

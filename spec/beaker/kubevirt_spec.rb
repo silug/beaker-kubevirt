@@ -242,8 +242,8 @@ RSpec.describe Beaker::Kubevirt do
       expect(vm_spec['metadata']['namespace']).to eq('beaker-test')
     end
 
-    it 'is running' do
-      expect(vm_spec['spec']['running']).to be true
+    it 'has the correct runStrategy' do
+      expect(vm_spec['spec']['runStrategy']).to eq('Once')
     end
 
     it 'includes cloud-init configuration' do
@@ -257,6 +257,192 @@ RSpec.describe Beaker::Kubevirt do
       volumes = vm_spec.dig('spec', 'template', 'spec', 'volumes')
       cloud_init_volume = volumes.find { |v| v['name'] == 'cidata' }
       expect(cloud_init_volume.dig('cloudInitNoCloud', 'secretRef', 'name')).to eq(vm_spec_args[:cloud_init_data])
+    end
+
+    context 'with explicit resource requests/limits' do
+      let(:options) do
+        {
+          logger: instance_double(Logger).as_null_object,
+          kubeconfig: '/tmp/kubeconfig',
+          namespace: 'beaker-test',
+          kubevirt_vm_image: 'docker://example/img',
+          kubevirt_memory: '4Gi',
+        }
+      end
+
+      it 'sets memory limit to guest plus default 512Mi overhead' do
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'limits', 'memory')).to eq('4608Mi')
+      end
+
+      it 'defaults memory request to the guest value' do
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'requests', 'memory')).to eq('4Gi')
+      end
+
+      it 'respects an overridden kubevirt_memory_overhead' do
+        options[:kubevirt_memory_overhead] = '1Gi'
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'limits', 'memory')).to eq('5120Mi')
+      end
+
+      it 'respects a per-host kubevirt_memory_overhead' do
+        hosts[0]['kubevirt_memory_overhead'] = '256Mi'
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'limits', 'memory')).to eq('4352Mi')
+      end
+
+      it 'respects an overridden kubevirt_memory_request' do
+        options[:kubevirt_memory_request] = '2Gi'
+        expect(vm_spec.dig('spec', 'template', 'spec', 'domain', 'resources', 'requests', 'memory')).to eq('2Gi')
+      end
+    end
+
+    context 'with the SSH readinessProbe' do
+      let(:probe) { vm_spec.dig('spec', 'template', 'spec', 'readinessProbe') }
+
+      it 'emits a tcpSocket probe on port 22 by default' do
+        expect(probe).to include(
+          'tcpSocket' => { 'port' => 22 },
+          'initialDelaySeconds' => 30,
+          'periodSeconds' => 10,
+          'timeoutSeconds' => 3,
+          'failureThreshold' => 60,
+          'successThreshold' => 1,
+        )
+      end
+
+      it 'uses the configured kubevirt_vm_ssh_port' do
+        hosts[0]['kubevirt_vm_ssh_port'] = 2222
+        expect(probe.dig('tcpSocket', 'port')).to eq(2222)
+      end
+
+      it 'omits the probe entirely when the host uses multus networking' do
+        hosts[0]['kubevirt_network_mode'] = 'multus'
+        expect(vm_spec.dig('spec', 'template', 'spec')).not_to have_key('readinessProbe')
+      end
+
+      it 'can be force-enabled under multus via opt-in' do
+        hosts[0]['kubevirt_network_mode'] = 'multus'
+        hosts[0]['kubevirt_readiness_probe_disabled'] = false
+        expect(probe).not_to be_nil
+      end
+
+      it 'can be disabled explicitly via options' do
+        options[:kubevirt_readiness_probe_disabled] = true
+        expect(vm_spec.dig('spec', 'template', 'spec')).not_to have_key('readinessProbe')
+      end
+
+      it 'merges caller overrides over defaults' do
+        options[:kubevirt_readiness_probe] = { period_seconds: 5, failure_threshold: 120 }
+        expect(probe).to include('periodSeconds' => 5, 'failureThreshold' => 120,
+                                 'initialDelaySeconds' => 30)
+      end
+
+      it 'prefers per-host readiness_probe overrides over global options' do
+        options[:kubevirt_readiness_probe] = { period_seconds: 5 }
+        hosts[0]['kubevirt_readiness_probe'] = { period_seconds: 15 }
+        expect(probe['periodSeconds']).to eq(15)
+      end
+    end
+  end
+
+  describe '#wait_for_vm_ready' do
+    let(:hypervisor) { described_class.new(hosts, options.merge(timeout: 600)) }
+    let(:host) { { 'vm_name' => 'test-vm' } }
+    let(:vm_object) { { 'metadata' => { 'name' => 'test-vm' } } }
+    let(:ready_true) { { 'type' => 'Ready', 'status' => 'True' } }
+    let(:ready_false) { { 'type' => 'Ready', 'status' => 'False', 'reason' => 'GuestNotRunning' } }
+
+    before do
+      stub_const('Beaker::Kubevirt::SLEEPWAIT', 0)
+      allow(kubevirt_helper).to receive_messages(get_vm: vm_object, get_virt_launcher_pod: nil)
+    end
+
+    it 'returns when the VMI is Running and Ready=True' do
+      allow(kubevirt_helper).to receive(:get_vmi)
+        .and_return('status' => { 'phase' => 'Running', 'conditions' => [ready_true] })
+      expect { hypervisor.send(:wait_for_vm_ready, host) }.not_to raise_error
+    end
+
+    it 'keeps waiting when phase is Running but Ready=False, then returns when Ready flips' do
+      not_ready = { 'status' => { 'phase' => 'Running', 'conditions' => [ready_false] } }
+      ready = { 'status' => { 'phase' => 'Running', 'conditions' => [ready_true] } }
+      allow(kubevirt_helper).to receive(:get_vmi).and_return(not_ready, not_ready, ready)
+      expect { hypervisor.send(:wait_for_vm_ready, host) }.not_to raise_error
+      expect(kubevirt_helper).to have_received(:get_vmi).at_least(3).times
+    end
+
+    it 'returns on phase=Running alone when the probe is disabled' do
+      host['kubevirt_readiness_probe_disabled'] = true
+      allow(kubevirt_helper).to receive(:get_vmi).and_return('status' => { 'phase' => 'Running' })
+      expect { hypervisor.send(:wait_for_vm_ready, host) }.not_to raise_error
+    end
+
+    it 'returns on phase=Running alone in multus mode (probe skipped by default)' do
+      host['kubevirt_network_mode'] = 'multus'
+      allow(kubevirt_helper).to receive(:get_vmi).and_return('status' => { 'phase' => 'Running' })
+      expect { hypervisor.send(:wait_for_vm_ready, host) }.not_to raise_error
+    end
+
+    it 'raises immediately when the compute container was OOMKilled' do
+      allow(kubevirt_helper).to receive_messages(
+        get_vmi: { 'status' => { 'phase' => 'Scheduling' } },
+        get_virt_launcher_pod: {
+          'status' => {
+            'phase' => 'Running',
+            'containerStatuses' => [
+              {
+                'name' => 'compute',
+                'lastState' => { 'terminated' => { 'reason' => 'OOMKilled', 'exitCode' => 137 } },
+                'state' => { 'waiting' => { 'reason' => 'CrashLoopBackOff' } },
+              },
+            ],
+          },
+        },
+      )
+      expect { hypervisor.send(:wait_for_vm_ready, host) }.to raise_error(/CrashLoopBackOff|OOMKilled/)
+    end
+
+    it 'surfaces OOMKilled with an overhead hint when the container is not yet waiting' do
+      allow(kubevirt_helper).to receive_messages(
+        get_vmi: { 'status' => { 'phase' => 'Scheduling' } },
+        get_virt_launcher_pod: {
+          'status' => {
+            'phase' => 'Running',
+            'containerStatuses' => [
+              {
+                'name' => 'compute',
+                'state' => { 'terminated' => { 'reason' => 'OOMKilled', 'exitCode' => 137 } },
+              },
+            ],
+          },
+        },
+      )
+      expect { hypervisor.send(:wait_for_vm_ready, host) }
+        .to raise_error(/OOMKilled.*kubevirt_memory_overhead/)
+    end
+
+    it 'raises when the VMI reaches a terminal phase' do
+      allow(kubevirt_helper).to receive(:get_vmi).and_return({ 'status' => { 'phase' => 'Failed' } })
+      expect { hypervisor.send(:wait_for_vm_ready, host) }
+        .to raise_error(/terminal phase Failed/)
+    end
+
+    describe 'effective timeout' do
+      it 'auto-raises the outer timeout to fit the probe budget' do
+        hypervisor = described_class.new(hosts, options.merge(timeout: 5))
+        # Tight probe budget: 0 + 0 * 3 + 60 = 60 > 5
+        host['kubevirt_readiness_probe'] = { initial_delay_seconds: 0, period_seconds: 0, failure_threshold: 3 }
+        expect(Timeout).to receive(:timeout).with(60).and_call_original
+        allow(kubevirt_helper).to receive(:get_vmi)
+          .and_return('status' => { 'phase' => 'Running', 'conditions' => [ready_true] })
+        hypervisor.send(:wait_for_vm_ready, host)
+      end
+
+      it 'keeps the configured timeout when the probe is disabled' do
+        hypervisor = described_class.new(hosts, options.merge(timeout: 42))
+        host['kubevirt_readiness_probe_disabled'] = true
+        expect(Timeout).to receive(:timeout).with(42).and_call_original
+        allow(kubevirt_helper).to receive(:get_vmi).and_return('status' => { 'phase' => 'Running' })
+        hypervisor.send(:wait_for_vm_ready, host)
+      end
     end
   end
 
@@ -1009,6 +1195,51 @@ RSpec.describe Beaker::Kubevirt do
             },
           },
         )
+      end
+    end
+  end
+
+  describe '#wait_for_vm_ready (legacy: VM existence polling)' do
+    let(:vm_name) { 'beaker-abc123-test-host' }
+    let(:hypervisor) { described_class.new(hosts, options.merge(timeout: 5)) }
+    let(:host) { hosts[0].merge('vm_name' => vm_name) }
+    let(:vm_object) { { 'metadata' => { 'name' => vm_name } } }
+    let(:running_vmi) do
+      {
+        'status' => {
+          'phase' => 'Running',
+          'conditions' => [{ 'type' => 'Ready', 'status' => 'True' }],
+        },
+      }
+    end
+
+    before do
+      allow(hypervisor).to receive(:sleep)
+      allow(kubevirt_helper).to receive(:get_virt_launcher_pod).and_return(nil)
+    end
+
+    context 'when VM eventually exists and remains available' do
+      before do
+        allow(kubevirt_helper).to receive(:get_vm).with(vm_name).and_return(nil, vm_object, vm_object, vm_object)
+        allow(kubevirt_helper).to receive(:get_vmi).with(vm_name).and_return(nil, running_vmi)
+      end
+
+      it 'waits until the VMI is running and Ready' do
+        expect { hypervisor.send(:wait_for_vm_ready, host) }.not_to raise_error
+        expect(kubevirt_helper).to have_received(:get_vm).with(vm_name).at_least(:twice)
+        expect(kubevirt_helper).to have_received(:get_vmi).with(vm_name).at_least(:once)
+      end
+    end
+
+    context 'when VM disappears while waiting for VMI readiness' do
+      before do
+        allow(kubevirt_helper).to receive(:get_vm).with(vm_name).and_return(vm_object, vm_object, nil)
+        allow(kubevirt_helper).to receive(:get_vmi).with(vm_name).and_return(nil)
+      end
+
+      it 'raises an error indicating the VM was deleted' do
+        expect { hypervisor.send(:wait_for_vm_ready, host) }.to raise_error("VM #{vm_name} was deleted unexpectedly")
+        expect(kubevirt_helper).to have_received(:get_vm).with(vm_name).at_least(:twice)
       end
     end
   end

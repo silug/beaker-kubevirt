@@ -43,6 +43,13 @@ module Beaker
     # Values of BEAKER_destroy that indicate resources should be preserved
     BEAKER_DESTROY_PRESERVE_VALUES = %w[no never onpass].freeze
 
+    # VMI phases that indicate the VM will never reach Running.
+    VMI_TERMINAL_PHASES = %w[Failed Succeeded].freeze
+    # virt-launcher container waiting reasons we treat as fatal.
+    FATAL_CONTAINER_WAITING_REASONS = %w[CrashLoopBackOff ImagePullBackOff ErrImagePull].freeze
+    # virt-launcher container termination reasons we treat as fatal.
+    FATAL_CONTAINER_TERMINATED_REASONS = %w[OOMKilled Error ContainerCannotRun].freeze
+
     ##
     # Create a new instance of the KubeVirt hypervisor object
     #
@@ -58,8 +65,22 @@ module Beaker
     # @option options [String] :kubevirt_ssh_key SSH public key to inject
     # @option options [String] :kubevirt_cpus CPU resources for VM
     # @option options [String] :kubevirt_memory Memory resources for VM
+    # @option options [String] :kubevirt_memory_overhead Extra memory added to guest for the
+    #   container memory limit (default: '512Mi'). Needed for Windows guests where KubeVirt's
+    #   auto-computed virt-launcher overhead is too small and the compute container gets OOMKilled.
+    # @option options [String] :kubevirt_memory_request Memory request for the VM pod
+    #   (default: same as :kubevirt_memory).
     # @option options [Integer] :kubevirt_vm_ssh_port Port that SSH runs on inside the VM (default: 22)
-    # @option options [Integer] :timeout Timeout for operations
+    # @option options [Boolean] :kubevirt_readiness_probe_disabled Skip the VMI SSH
+    #   readinessProbe. Defaults to false for pod-network modes (port-forward, nodeport)
+    #   and true for multus (the tcpSocket probe runs from the virt-launcher pod's
+    #   network namespace and typically can't reach a bridge-only guest on a secondary NIC).
+    # @option options [Hash] :kubevirt_readiness_probe Probe tuning (all optional, snake_case):
+    #   :initial_delay_seconds (30), :period_seconds (10), :timeout_seconds (3),
+    #   :failure_threshold (60), :success_threshold (1). The default failure budget
+    #   (period_seconds * failure_threshold = 600s) accommodates slow Windows first-boots.
+    # @option options [Integer] :timeout Timeout for operations. When the readiness probe is
+    #   enabled, the effective wait is max(:timeout, probe budget + 60s).
     # @option options [Boolean] :kubevirt_disable_virtio Disable virtio devices (for compatibility with Windows)
     def initialize(kubevirt_hosts, options)
       require 'beaker/hypervisor/kubevirt_helper'
@@ -84,8 +105,11 @@ module Beaker
       # provisioning but before normal cleanup
       # Note: Each instance registers its own at_exit handler, but cleanup is idempotent
       # and scoped to the specific test_group_identifier for this instance
-      # Skip registration during tests to avoid issues with mock objects
-      return if defined?(RSpec)
+      # Skip registration during this gem's own rspec run (set by spec_helper).
+      # Gating on `defined?(RSpec)` misfired in downstream projects that run
+      # Beaker from inside their own rspec suite, suppressing the safety net
+      # for every consumer.
+      return if ENV['BEAKER_KUBEVIRT_DISABLE_AT_EXIT_CLEANUP'] == '1'
 
       at_exit do
         cleanup_on_exit
@@ -100,6 +124,10 @@ module Beaker
 
       @hosts.each do |host|
         create_vm(host)
+      rescue StandardError, Interrupt => e
+        @logger.error("Error creating VM for host #{host.name}: #{e.message}")
+        cleanup
+        raise e
       end
 
       @hosts.each do |host|
@@ -148,7 +176,7 @@ module Beaker
             sleep delay
           end
         rescue Timeout::Error
-          @logger.warn("Port-forwarder for host #{host_name} did not stop in time: ")
+          @logger.warn("Port-forwarder for host #{host_name} did not stop in time")
           raise
         rescue StandardError => e
           @logger.error("Error stopping port-forwarder for host #{host_name}: #{e}")
@@ -325,14 +353,17 @@ module Beaker
 
       # Add custom cloud-init if provided
       if @options[:cloud_init]
-        custom_init = YAML.safe_load(@options[:cloud_init])
+        begin
+          custom_init = YAML.safe_load(@options[:cloud_init])
+        rescue Psych::SyntaxError => e
+          raise ArgumentError, "Invalid cloud-init YAML in kubevirt_cloud_init option: #{e.message}"
+        end
         cloud_init = cloud_init.merge(custom_init)
       end
       # It looks like the ssh-key is being wrapped to a new line by default, so we need to ensure it is properly formatted
       cloud_init_yaml = Psych.dump(cloud_init, line_width: -1)
       cloud_init_yaml.gsub!(/^---\n/, '') # Remove YAML document header
       "#cloud-config\n#{cloud_init_yaml}"
-      # Base64.strict_encode64("#cloud-config\n#{cloud_init_yaml}").strip
     end
 
     ##
@@ -341,8 +372,10 @@ module Beaker
     def find_ssh_key_pair
       if @options[:kubevirt_ssh_key]
         # If kubevirt_ssh_key is specified, it could be a public key path/content
-        if File.exist?(@options[:kubevirt_ssh_key])
-          pub_key_path = @options[:kubevirt_ssh_key]
+        ssh_key_value = @options[:kubevirt_ssh_key]
+        ssh_key_path = ssh_key_value.match?(%r{^[~/.]}) ? File.expand_path(ssh_key_value) : ssh_key_value
+        if File.exist?(ssh_key_path)
+          pub_key_path = ssh_key_path
           pub_key_content = File.read(pub_key_path).strip
 
           # Try to find matching private key
@@ -454,8 +487,14 @@ module Beaker
       memory = host['kubevirt_memory'] || @options[:kubevirt_memory] || '2Gi'
       # If the memory is a plain number, assume MiB
       memory = "#{memory}Mi" if /^\d+$/.match?(memory)
+
+      overhead = host['kubevirt_memory_overhead'] || @options[:kubevirt_memory_overhead] || '512Mi'
+      overhead = "#{overhead}Mi" if /\A\d+\z/.match?(overhead.to_s)
+      memory_request = host['kubevirt_memory_request'] || @options[:kubevirt_memory_request] || memory
+      memory_request = "#{memory_request}Mi" if /\A\d+\z/.match?(memory_request.to_s)
+      memory_limit = "#{parse_memory_mib(memory) + parse_memory_mib(overhead)}Mi"
+
       vm_image = host['kubevirt_vm_image'] || @options[:kubevirt_vm_image]
-      # TODO: Check this logic, it might be incorrect
       host_name = host.respond_to?(:name) ? host.name : host['name']
 
       unless vm_image
@@ -473,7 +512,7 @@ module Beaker
           'labels' => get_labels(host),
         },
         'spec' => {
-          'running' => true,
+          'runStrategy' => 'Once',
           'dataVolumeTemplates' => generate_root_volume_dvtemplate(vm_image, host),
           'template' => {
             'metadata' => {
@@ -490,6 +529,10 @@ module Beaker
                 },
                 'memory' => {
                   'guest' => memory.to_s,
+                },
+                'resources' => {
+                  'requests' => { 'memory' => memory_request },
+                  'limits' => { 'memory' => memory_limit },
                 },
                 'devices' => generate_hardware_spec(host),
                 'features' => {
@@ -508,6 +551,7 @@ module Beaker
               },
               'hostname' => host_name,
               'networks' => generate_networks_spec(host),
+              'readinessProbe' => generate_readiness_probe_spec(host),
               'volumes' => [
                 generate_root_volume_spec(vm_image, host),
                 {
@@ -520,7 +564,7 @@ module Beaker
                 },
                 generate_service_account_volume_spec,
               ].compact,
-            },
+            }.compact,
           },
         },
       }
@@ -661,16 +705,40 @@ module Beaker
       vm_name = host['vm_name']
       @logger.info("Waiting for VM #{vm_name} to be ready...")
 
-      timeout = @options[:timeout] || 300
+      probe = generate_readiness_probe_spec(host)
+      timeout = effective_ready_timeout(probe)
+
       begin
         Timeout.timeout(timeout) do
-          # Wait for the VM to be created and running
           loop do
+            # First, wait for the VM to exist
+            vm = @kubevirt_helper.get_vm(vm_name)
+            break if vm
+
+            @logger.debug("VM #{vm_name} not found yet, waiting...")
+            sleep SLEEPWAIT
+          end
+          loop do
+            # First, check if the VM still exists
+            vm = @kubevirt_helper.get_vm(vm_name)
+            unless vm
+              @logger.error("VM #{vm_name} no longer exists")
+              raise "VM #{vm_name} was deleted unexpectedly"
+            end
+
+            # Then check if the VM is running
             vmi = @kubevirt_helper.get_vmi(vm_name)
-            if vmi && vmi.dig('status', 'phase') == 'Running'
-              @logger.debug("VM #{vm_name} is running")
+            phase = vmi&.dig('status', 'phase')
+
+            if phase == 'Running' && vmi_ssh_ready?(vmi, probe)
+              @logger.debug("VM #{vm_name} is ready")
               break
             end
+
+            raise "VMI #{vm_name} entered terminal phase #{phase} before becoming Ready" if VMI_TERMINAL_PHASES.include?(phase)
+
+            check_virt_launcher_health!(vm_name)
+
             sleep SLEEPWAIT
           end
         end
@@ -681,16 +749,134 @@ module Beaker
     end
 
     ##
+    # Whether the VMI is fully ready. If a readiness probe is configured,
+    # require the KubeVirt-managed `Ready` status condition to be True (that
+    # tracks the tcpSocket probe, so sshd is actually listening). Otherwise
+    # fall back to phase=Running alone — the historical behavior.
+    # @param [Hash] vmi VMI object from the kubevirt API
+    # @param [Hash, nil] probe The probe spec, or nil when disabled
+    # @return [Boolean]
+    def vmi_ssh_ready?(vmi, probe)
+      return true if probe.nil?
+
+      condition = Array(vmi&.dig('status', 'conditions'))
+                  .find { |c| c['type'] == 'Ready' }
+      if condition.nil?
+        @logger.debug('VMI has no Ready condition yet, continuing to wait')
+        return false
+      end
+      return true if condition['status'] == 'True'
+
+      @logger.debug("VMI Ready=#{condition['status']} reason=#{condition['reason']} message=#{condition['message']}")
+      false
+    end
+
+    ##
+    # Compute the effective outer Timeout for wait_for_vm_ready. When a probe
+    # is configured, the probe's worst-case budget (initial delay + period *
+    # failureThreshold) must fit, otherwise a user who left :timeout at the
+    # default would see the probe truncated before it can fail legitimately.
+    # @param [Hash, nil] probe
+    # @return [Integer] seconds
+    def effective_ready_timeout(probe)
+      base = @options[:timeout] || 300
+      return base if probe.nil?
+
+      probe_budget = probe['initialDelaySeconds'] +
+                     (probe['periodSeconds'] * probe['failureThreshold']) + 60
+      [base, probe_budget].max
+    end
+
+    ##
+    # Inspect the virt-launcher pod backing a VMI and raise with a specific reason
+    # if it has already failed (OOMKilled, image pull errors, crash loops, etc.)
+    # so we fail fast instead of waiting the full timeout.
+    # @param [String] vm_name
+    def check_virt_launcher_health!(vm_name)
+      pod = @kubevirt_helper.get_virt_launcher_pod(vm_name)
+      return unless pod
+
+      phase = pod.dig('status', 'phase')
+      raise "virt-launcher pod for #{vm_name} entered phase #{phase}" if phase == 'Failed'
+
+      statuses = Array(pod.dig('status', 'containerStatuses')) +
+                 Array(pod.dig('status', 'initContainerStatuses'))
+      statuses.each do |cs|
+        name = cs['name']
+        waiting_reason = cs.dig('state', 'waiting', 'reason')
+        if FATAL_CONTAINER_WAITING_REASONS.include?(waiting_reason)
+          raise "virt-launcher container #{name} for #{vm_name} is #{waiting_reason}: " \
+                "#{cs.dig('state', 'waiting', 'message')}"
+        end
+
+        last_term = cs.dig('lastState', 'terminated') || cs.dig('state', 'terminated')
+        reason = last_term && last_term['reason']
+        next unless FATAL_CONTAINER_TERMINATED_REASONS.include?(reason)
+
+        hint = (reason == 'OOMKilled' && name == 'compute') ? ' — increase :kubevirt_memory_overhead (default 512Mi)' : ''
+        raise "virt-launcher container #{name} for #{vm_name} terminated: #{reason}#{hint}"
+      end
+    end
+
+    ##
+    # The guest-side port SSH listens on, shared between the VMI readiness probe
+    # and client-side networking setup so they can never drift apart.
+    # @param [Host] host The host configuration
+    # @return [Integer] SSH port inside the guest
+    def vm_ssh_port(host)
+      host['kubevirt_vm_ssh_port'] || @options[:kubevirt_vm_ssh_port] || 22
+    end
+
+    ##
+    # Whether the SSH readinessProbe should be skipped for this host.
+    # Defaults to false for pod-network modes (port-forward, nodeport) and true
+    # for multus (the probe runs from the virt-launcher pod's netns and
+    # typically can't reach a bridge-only guest on a secondary interface).
+    # @param [Host] host The host configuration
+    # @return [Boolean]
+    def readiness_probe_disabled?(host)
+      host_val = host['kubevirt_readiness_probe_disabled']
+      return host_val unless host_val.nil?
+
+      opt_val = @options[:kubevirt_readiness_probe_disabled]
+      return opt_val unless opt_val.nil?
+
+      (host['kubevirt_network_mode'] || 'port-forward') == 'multus'
+    end
+
+    ##
+    # Build the KubeVirt readinessProbe hash for a host, or nil if disabled.
+    # A tcpSocket probe on the guest's SSH port lets KubeVirt publish a
+    # Ready condition once sshd is actually accepting connections — wait_for_vm_ready
+    # gates on that condition so Beaker doesn't attempt SSH before the guest is up.
+    # Per-host overrides win over global options; snake_case keys map to the
+    # camelCase probe fields KubeVirt expects.
+    # @param [Host] host The host configuration
+    # @return [Hash, nil]
+    def generate_readiness_probe_spec(host)
+      return nil if readiness_probe_disabled?(host)
+
+      cfg = (@options[:kubevirt_readiness_probe] || {})
+            .merge(host['kubevirt_readiness_probe'] || {})
+      {
+        'tcpSocket' => { 'port' => vm_ssh_port(host) },
+        'initialDelaySeconds' => cfg[:initial_delay_seconds] || 30,
+        'periodSeconds' => cfg[:period_seconds] || 10,
+        'timeoutSeconds' => cfg[:timeout_seconds] || 3,
+        'failureThreshold' => cfg[:failure_threshold] || 60,
+        'successThreshold' => cfg[:success_threshold] || 1,
+      }
+    end
+
+    ##
     # Setup networking for the VM
     # @param [Host] host The host to setup networking for
     def setup_networking(host)
       network_mode = host['kubevirt_network_mode'] || 'port-forward'
-      # Allow the VM SSH port to be configured per-host or use default
-      vm_ssh_port = host['kubevirt_vm_ssh_port'] || @options[:kubevirt_vm_ssh_port] || 22
 
       case network_mode
       when 'port-forward'
-        setup_port_forward(host, vm_ssh_port)
+        setup_port_forward(host, vm_ssh_port(host))
       when 'nodeport'
         setup_nodeport(host)
       when 'multus'
@@ -725,12 +911,10 @@ module Beaker
       host['ssh'] = ssh_options
 
       @logger.debug("Setting up port-forward for VM #{vm_name} from localhost:#{local_port} to VM port #{host_port}")
-      @logger.info("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}")
+      @logger.debug("Configured SSH connection: host['ip']=#{host['ip']}, host['port']=#{host['port']}, host['ssh']['port']=#{host['ssh']['port']}")
 
       # Setup port forwarding from local_port to host_port (22) on the VM
       host['port_forwarder'] = @kubevirt_helper.setup_port_forward(vm_name, host_port, local_port)
-
-      @logger.info("Port forward setup for VM #{vm_name} on localhost:#{local_port}")
     end
 
     ##
@@ -784,11 +968,16 @@ module Beaker
       if key_pair[:private_key_path]
         # Get the ssh options, modify them, and set them back
         ssh_options = host['ssh'] || {}
-        # Set the keys array to use the matching private key
-        ssh_options['keys'] = [key_pair[:private_key_path]]
+        # Prepend the matching key, preserve any pre-existing keys so fallbacks
+        # (agent-forwarded, project-wide CI key) still work if ours is unusable.
+        existing_keys = Array(ssh_options['keys'])
+        merged_keys = [key_pair[:private_key_path]] + existing_keys
+        merged_keys.uniq!
+        ssh_options['keys'] = merged_keys
         host['ssh'] = ssh_options
 
-        @logger.info("Configured SSH to use private key: #{key_pair[:private_key_path]}")
+        @logger.info("Configured SSH to use private key #{File.basename(key_pair[:private_key_path])}")
+        @logger.debug("SSH private key full path: #{key_pair[:private_key_path]}")
       else
         @logger.warn('Could not determine private key path, SSH will use default keys')
       end
@@ -834,6 +1023,20 @@ module Beaker
     # - Maximum length of 63 characters
     # @param [String] name The string to sanitize
     # @return [String] RFC 1035 compliant string
+    # Parse a memory string ("4Gi", "512Mi", "2048") into an integer number of MiB.
+    # @param [String, Integer] value
+    # @return [Integer] MiB
+    def parse_memory_mib(value)
+      s = value.to_s.strip
+      case s
+      when /\A(\d+)Gi\z/ then Regexp.last_match(1).to_i * 1024
+      when /\A(\d+)Mi\z/ then Regexp.last_match(1).to_i
+      when /\A(\d+)\z/   then s.to_i
+      else
+        raise ArgumentError, "Cannot parse memory value #{value.inspect} (expected Gi/Mi suffix or bare MiB)"
+      end
+    end
+
     def sanitize_k8s_name(name)
       # Remove invalid characters, replace with hyphens
       sanitized = name.downcase.gsub(/[^a-z0-9-]/, '-')
