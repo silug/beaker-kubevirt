@@ -766,6 +766,38 @@ RSpec.describe Beaker::Kubevirt do
     end
   end
 
+  describe '#sanitize_k8s_label_value' do
+    let(:hypervisor) { described_class.new(hosts, options) }
+
+    it 'passes through a simple name' do
+      expect(hypervisor.send(:sanitize_k8s_label_value, 'foo')).to eq('foo')
+    end
+
+    it 'preserves case, dots, and underscores' do
+      expect(hypervisor.send(:sanitize_k8s_label_value, 'My.Host_01')).to eq('My.Host_01')
+    end
+
+    it 'replaces disallowed characters with hyphens' do
+      expect(hypervisor.send(:sanitize_k8s_label_value, 'foo/bar')).to eq('foo-bar')
+    end
+
+    it 'strips leading non-alphanumeric characters' do
+      expect(hypervisor.send(:sanitize_k8s_label_value, '-leading')).to eq('leading')
+    end
+
+    it 'strips trailing non-alphanumeric characters' do
+      expect(hypervisor.send(:sanitize_k8s_label_value, 'trailing-')).to eq('trailing')
+    end
+
+    it 'caps length at 63 characters' do
+      expect(hypervisor.send(:sanitize_k8s_label_value, 'a' * 100).length).to eq(63)
+    end
+
+    it 'falls back to sanitize_k8s_name when nothing alphanumeric remains' do
+      expect(hypervisor.send(:sanitize_k8s_label_value, '!!')).to eq(hypervisor.send(:sanitize_k8s_name, '!!'))
+    end
+  end
+
   describe '#generate_root_volume_dvtemplate' do
     let(:hypervisor) { described_class.new(hosts, options) }
     let(:vm_name) { 'test-vm-123' }
@@ -1468,6 +1500,11 @@ RSpec.describe Beaker::Kubevirt do
     it 'includes beaker/host label with host name' do
       result = hypervisor.send(:get_labels, host)
       expect(result['beaker/host']).to eq('test-host')
+    end
+
+    it 'sanitizes hostnames that are invalid as k8s label values' do
+      result = hypervisor.send(:get_labels, { 'name' => 'foo/bar' })
+      expect(result['beaker/host']).to eq('foo-bar')
     end
 
     it 'uses host name from name method when available' do

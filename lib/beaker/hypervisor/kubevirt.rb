@@ -43,6 +43,11 @@ module Beaker
     # Values of BEAKER_destroy that indicate resources should be preserved
     BEAKER_DESTROY_PRESERVE_VALUES = %w[no never onpass].freeze
 
+    # Shared Kubernetes 63-character upper bound used by names/labels in this class.
+    K8S_NAME_MAX = 63
+    # Kubernetes label-value maximum length under Kubernetes label value constraints (63 chars).
+    LABEL_VALUE_MAX = K8S_NAME_MAX
+
     # VMI phases that indicate the VM will never reach Running.
     VMI_TERMINAL_PHASES = %w[Failed Succeeded].freeze
     # virt-launcher container waiting reasons we treat as fatal.
@@ -427,10 +432,26 @@ module Beaker
     end
 
     def get_labels(host)
+      raw_name = host.respond_to?(:name) ? host.name : host['name']
       {
         'beaker/test-group' => @test_group_identifier,
-        'beaker/host' => host.respond_to?(:name) ? host.name : host['name'],
+        'beaker/host' => sanitize_k8s_label_value(raw_name),
       }
+    end
+
+    ##
+    # Sanitize a string to meet Kubernetes' label-value constraints:
+    # label values may be empty; otherwise they may be up to 63 characters,
+    # contain only [a-zA-Z0-9_.-], and must start and end with an
+    # alphanumeric character.
+    # Unlike sanitize_k8s_name this preserves dots, underscores, and case —
+    # labels allow them and losing that information makes `kubectl -l` lookups
+    # by hostname fail.
+    def sanitize_k8s_label_value(value)
+      cleaned = value.to_s.gsub(/[^-A-Za-z0-9_.]/, '-')
+      cleaned = cleaned[0, LABEL_VALUE_MAX]
+      cleaned = cleaned.sub(/\A[^A-Za-z0-9]+/, '').sub(/[^A-Za-z0-9]+\z/, '')
+      cleaned.empty? ? sanitize_k8s_name(value) : cleaned
     end
 
     def disk_bus(host)
