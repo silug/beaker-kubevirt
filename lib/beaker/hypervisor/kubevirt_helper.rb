@@ -229,7 +229,9 @@ module Beaker
     # Clean up temporary files containing sensitive credentials
     def cleanup_temp_files
       @temp_files.each do |file|
-        file.close! rescue nil # rubocop:disable Style/RescueModifier
+        file.close!
+      rescue
+        nil
       end
       @temp_files.clear
     end
