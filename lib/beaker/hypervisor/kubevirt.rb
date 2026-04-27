@@ -45,7 +45,7 @@ module Beaker
 
     # Shared Kubernetes 63-character upper bound used by names/labels in this class.
     K8S_NAME_MAX = 63
-    # Kubernetes label-value upper bound (RFC 1123, 63 chars).
+    # Kubernetes label-value maximum length under Kubernetes label value constraints (63 chars).
     LABEL_VALUE_MAX = K8S_NAME_MAX
 
     # VMI phases that indicate the VM will never reach Running.
