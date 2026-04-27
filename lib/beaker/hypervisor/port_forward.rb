@@ -262,7 +262,11 @@ class KubeVirtPortForwarder
     base_ws_url = base_url.sub(/^http/, 'ws')
     ns = URI.encode_www_form_component(@namespace)
     vmi = URI.encode_www_form_component(@vmi_name)
-    url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{ns}/virtualmachineinstances/#{vmi}/portforward/#{@target_port.to_i}"
+    target_port = Integer(@target_port, exception: false)
+    unless target_port && target_port.between?(1, 65_535)
+      raise ArgumentError, "Invalid target port: #{@target_port.inspect}. Expected an integer between 1 and 65535."
+    end
+    url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{ns}/virtualmachineinstances/#{vmi}/portforward/#{target_port}"
     @logger.debug("WebSocket URL: #{url}")
 
     auth_token = @kube_client.auth_options[:bearer_token]
