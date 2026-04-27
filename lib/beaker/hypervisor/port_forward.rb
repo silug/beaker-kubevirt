@@ -232,7 +232,9 @@ class KubeVirtPortForwarder
         end
         raise 'EventMachine reactor thread exited during startup with no exception'
       end
-      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if Time.now > deadline
+      if Time.now > deadline
+        raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" unless EventMachine.reactor_running?
+      end
 
       sleep 0.1
     end
