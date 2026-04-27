@@ -43,8 +43,10 @@ module Beaker
     # Values of BEAKER_destroy that indicate resources should be preserved
     BEAKER_DESTROY_PRESERVE_VALUES = %w[no never onpass].freeze
 
+    # Shared Kubernetes 63-character upper bound used by names/labels in this class.
+    K8S_NAME_MAX = 63
     # Kubernetes label-value upper bound (RFC 1123, 63 chars).
-    LABEL_VALUE_MAX = 63
+    LABEL_VALUE_MAX = K8S_NAME_MAX
 
     # VMI phases that indicate the VM will never reach Running.
     VMI_TERMINAL_PHASES = %w[Failed Succeeded].freeze
