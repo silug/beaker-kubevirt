@@ -13,7 +13,8 @@ module Beaker
     def initialize(options)
       @options = options
       @namespace = options[:namespace] || 'default'
-      @kubeconfig_path = options[:kubeconfig] || ENV['KUBECONFIG'] || File.join(Dir.home, '.kube', 'config')
+      raw_kubeconfig = options[:kubeconfig] || ENV['KUBECONFIG'] || File.join(Dir.home, '.kube', 'config')
+      @kubeconfig_path = File.expand_path(raw_kubeconfig)
       @kubecontext = options[:kubecontext] || ENV.fetch('KUBECONTEXT', nil)
       @logger = options[:logger]
 
@@ -374,6 +375,9 @@ module Beaker
     def load_kubeconfig
       return @kubeconfig_data if @kubeconfig_data
       raise "Kubeconfig file not found: #{@kubeconfig_path}" unless File.exist?(@kubeconfig_path)
+      raise "Kubeconfig path is not a regular file: #{@kubeconfig_path}" unless File.file?(@kubeconfig_path)
+
+      @logger&.warn("kubeconfig #{@kubeconfig_path} is a symlink to #{File.realpath(@kubeconfig_path)}") if File.symlink?(@kubeconfig_path)
 
       @kubeconfig_data = YAML.safe_load_file(@kubeconfig_path)
       @kubeconfig_data
