@@ -223,8 +223,12 @@ class KubeVirtPortForwarder
       unless @reactor_thread.alive?
         begin
           @reactor_thread.value # re-raises the thread's exception, if any
-        rescue StandardError => e
-          raise "EventMachine reactor thread exited during startup: #{e.class}: #{e.message}"
+        rescue Exception => e
+          startup_error = RuntimeError.new(
+            "EventMachine reactor thread exited during startup: #{e.class}: #{e.message}"
+          )
+          startup_error.set_backtrace(e.backtrace)
+          raise startup_error, cause: e
         end
         raise 'EventMachine reactor thread exited during startup with no exception'
       end
