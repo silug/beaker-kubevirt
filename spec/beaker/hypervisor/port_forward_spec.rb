@@ -1064,10 +1064,10 @@ RSpec.describe KubeVirtPortForwarder do
         end.not_to raise_error
 
         # Verify it logged the protocol without rejecting it
-        expect(logger).to have_received(:info).with(/Using raw stream protocol \(negotiated: '#{protocol || 'none'}'\)/)
+        expect(logger).to have_received(:debug).with(/Using raw stream protocol \(negotiated: '#{protocol || 'none'}'\)/)
 
         # Reset logger expectations for next iteration
-        allow(logger).to receive(:info)
+        allow(logger).to receive(:debug)
       end
     end
   end

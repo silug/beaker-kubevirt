@@ -11,9 +11,10 @@ require 'json'
 # It handles the entire lifecycle of discovering the VMI, establishing a
 # WebSocket connection via the Kubernetes API, and proxying data.
 #
-# It is designed to be resilient, handling retries internally so that a client
-# (like Beaker's SSH client) can connect to the local port and simply wait
-# until the VMI is ready.
+# Each accepted client connection makes a single attempt to open the WebSocket
+# to the VMI. If that attempt fails, the client socket is closed so the caller
+# (e.g. Beaker's SSH client) sees the connection failure promptly and learns
+# the real state of the port, rather than waiting behind an internal retry loop.
 #
 # See the bottom of this file for a complete usage example.
 #
@@ -108,14 +109,15 @@ class KubeVirtPortForwarder
         begin
           # Accept a connection from a client (e.g., Beaker's SSH).
           client_socket = @server.accept
-          @logger.debug("Accepted connection from #{client_socket.peeraddr.join(':')}")
+          peer_ip, peer_port = client_socket.peeraddr(false).values_at(3, 1)
+          @logger.debug("Accepted connection from #{peer_ip}:#{peer_port}")
 
           # Handle the entire KubeVirt connection lifecycle in a new thread.
           conn_thread = Thread.new { handle_connection(client_socket) }
           @mutex.synchronize { @connection_threads << conn_thread }
         rescue IOError
           # This is expected when @server.close is called in stop()
-          @logger.info("Server on port #{@local_port} is shutting down.")
+          @logger.debug("Server on port #{@local_port} stopped accepting connections.")
           break
         end
       end
@@ -243,8 +245,9 @@ class KubeVirtPortForwarder
     @mutex.synchronize { @connection_threads.delete(Thread.current) }
   end
 
-  # Attempts to establish the WebSocket connection, retrying on failure.
-  # This is the core of the "wait for VM" logic.
+  # Attempts to establish the WebSocket connection. The retry loop is retained
+  # for flexibility, but callers pass retries: 1 so a failure is reported to
+  # the client immediately rather than masked by internal waiting.
   # @param client_socket [TCPSocket] The client socket, used to check if the client is still connected.
   # @return [Faye::WebSocket::Client, nil] The connected WebSocket client or nil if it fails.
   def establish_websocket_with_retry(client_socket, retries: 10, delay: 5)
@@ -272,7 +275,7 @@ class KubeVirtPortForwarder
     retries.times do |_i|
       return nil if client_socket.closed?
 
-      @logger.info("Attempting to connect to VMI '#{@vmi_name}'...")
+      @logger.debug("Opening WebSocket to VMI '#{@vmi_name}' port #{@target_port}")
 
       connection_status_q = Queue.new
 
@@ -281,8 +284,7 @@ class KubeVirtPortForwarder
         ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: tls_options)
 
         ws.on :open do |_event|
-          @logger.info("Connected to VMI '#{@vmi_name}'")
-          @logger.debug("WebSocket protocol: #{ws.protocol}")
+          @logger.debug("WebSocket open to VMI '#{@vmi_name}' (protocol: #{ws.protocol || 'none'})")
           connection_status_q.push(ws)
         end
 
@@ -290,7 +292,7 @@ class KubeVirtPortForwarder
         # to provide a more specific reason for the failure.
         ws.on :close do |event|
           if event.code == 1000 # Normal closure
-            @logger.info('WebSocket connection closed normally.')
+            @logger.debug('WebSocket connection closed normally.')
           else
             err_msg = "WebSocket closed unexpectedly. Code: #{event.code}, Reason: #{event.reason}"
 
@@ -325,9 +327,8 @@ class KubeVirtPortForwarder
 
       return result if result.is_a?(Faye::WebSocket::Client)
 
-      # Success!
       unless retries == 1
-        @logger.warn("Attempt failed. Retrying in #{delay} seconds...")
+        @logger.warn("WebSocket connect attempt failed. Retrying in #{delay} seconds...")
         sleep delay
       end
     end
@@ -340,9 +341,9 @@ class KubeVirtPortForwarder
   def proxy_traffic(client_socket, websocket)
     use_channels = (websocket.protocol == STREAM_PROTOCOL)
     if use_channels
-      @logger.info("Using multiplexed stream protocol: #{STREAM_PROTOCOL}")
+      @logger.debug("Using multiplexed stream protocol: #{STREAM_PROTOCOL}")
     else
-      @logger.info("Using raw stream protocol (negotiated: '#{websocket.protocol || 'none'}')")
+      @logger.debug("Using raw stream protocol (negotiated: '#{websocket.protocol || 'none'}')")
     end
 
     # Mutex to synchronize access to client_socket from multiple threads
@@ -411,7 +412,7 @@ class KubeVirtPortForwarder
     end
 
     websocket.on :close do |event|
-      @logger.info("WebSocket connection closed. Code: #{event.code}, Reason: #{event.reason}")
+      @logger.debug("WebSocket connection closed. Code: #{event.code}, Reason: #{event.reason}")
       socket_mutex.synchronize do
         client_socket.close
       rescue StandardError
