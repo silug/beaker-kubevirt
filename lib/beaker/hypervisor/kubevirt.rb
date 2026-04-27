@@ -97,7 +97,9 @@ module Beaker
       @options = options
       @namespace = @options[:namespace]
       raise 'Namespace must be specified in options' unless @namespace
-      raise ArgumentError, "Invalid namespace #{@namespace.inspect}: must match RFC 1123 DNS label" unless NAMESPACE_RE.match?(@namespace)
+      unless @namespace.is_a?(String) && NAMESPACE_RE.match?(@namespace)
+        raise ArgumentError, "Invalid namespace #{@namespace.inspect}: must match RFC 1123 DNS label"
+      end
 
       @service_account = @options[:kubevirt_service_account]
 
