@@ -223,18 +223,20 @@ class KubeVirtPortForwarder
       unless @reactor_thread.alive?
         begin
           @reactor_thread.value # re-raises the thread's exception, if any
-        rescue Exception => e
+        # The reactor thread typically dies from non-StandardError causes such as
+        # LoadError (native extension failure) or other ScriptError subclasses.
+        # Rescue Exception so we can wrap and re-raise *any* cause with context;
+        # we do not swallow it (raise below preserves :cause and backtrace).
+        rescue Exception => e # rubocop:disable Lint/RescueException
           startup_error = RuntimeError.new(
-            "EventMachine reactor thread exited during startup: #{e.class}: #{e.message}"
+            "EventMachine reactor thread exited during startup: #{e.class}: #{e.message}",
           )
           startup_error.set_backtrace(e.backtrace)
           raise startup_error, cause: e
         end
         raise 'EventMachine reactor thread exited during startup with no exception'
       end
-      if Time.now > deadline
-        raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" unless EventMachine.reactor_running?
-      end
+      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if (Time.now > deadline) && !EventMachine.reactor_running?
 
       sleep 0.1
     end
