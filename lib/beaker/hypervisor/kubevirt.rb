@@ -967,7 +967,7 @@ module Beaker
       service_name = "#{vm_name}-ssh"
 
       @logger.debug("Creating NodePort service for VM #{vm_name}")
-      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name)
+      service = @kubevirt_helper.create_nodeport_service(vm_name, service_name, @test_group_identifier)
 
       node_port = service.dig('spec', 'ports', 0, 'nodePort')
       node_ip = @kubevirt_helper.node_ip
