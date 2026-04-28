@@ -37,7 +37,7 @@ module Beaker
       @original_ssl_options = extract_ssl_from_kubeconfig
       setup_kubernetes_client
       setup_kubevirt_client
-      setup_cdi_client
+      setup_cdi_client unless @cdi_client
     end
 
     ##
@@ -225,7 +225,10 @@ module Beaker
       dvs.each do |dv|
         md = dv[:metadata] || dv['metadata']
         dv_name = md[:name] || md['name'] if md
-        next unless dv_name && !dv_name.empty?
+        unless dv_name && !dv_name.empty?
+          @logger.error("Skipping DataVolume with missing name: #{dv.inspect[0, 200]}")
+          next
+        end
 
         @cdi_client.delete_data_volume(dv_name, @namespace)
         @logger.info("Deleted DataVolume #{dv_name}")
@@ -385,17 +388,21 @@ module Beaker
     ##
     # Setup CDI (Containerized Data Importer) API client used for managing
     # DataVolumes. Best-effort: clusters without CDI installed will still be
-    # able to provision container-disk / direct-PVC VMs. If setup fails we
-    # log and leave @cdi_client nil; cleanup_data_volumes will no-op.
+    # able to provision container-disk / direct-PVC VMs. We probe the API
+    # group with a `discover` call so that clusters lacking CDI leave
+    # @cdi_client nil rather than appearing live and warning on every
+    # cleanup.
     def setup_cdi_client
       config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
       context_config = config.context(@kubecontext)
-      @cdi_client = Kubeclient::Client.new(
+      client = Kubeclient::Client.new(
         "#{context_config.api_endpoint}/apis/cdi.kubevirt.io",
         'v1beta1',
         ssl_options: context_config.ssl_options,
         auth_options: context_config.auth_options,
       )
+      client.discover
+      @cdi_client = client
     rescue StandardError => e
       @logger&.debug("CDI client setup skipped: #{e.class}: #{e.message}")
       @cdi_client = nil
