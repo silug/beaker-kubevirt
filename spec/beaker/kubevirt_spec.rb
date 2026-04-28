@@ -101,11 +101,22 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
         allow(kubevirt_helper).to receive(:cleanup_temp_files)
+        allow(kubevirt_helper).to receive(:cleanup_data_volumes)
         hypervisor.cleanup
       end
 
       it 'cleans up vms' do
         expect(kubevirt_helper).to have_received(:cleanup_vms).with(anything)
+      end
+
+      it 'cleans up data volumes' do
+        expect(kubevirt_helper).to have_received(:cleanup_data_volumes).with(anything)
+      end
+
+      it 'cleans up data volumes after vms and before secrets' do
+        expect(kubevirt_helper).to have_received(:cleanup_vms).ordered
+        expect(kubevirt_helper).to have_received(:cleanup_data_volumes).ordered
+        expect(kubevirt_helper).to have_received(:cleanup_secrets).ordered
       end
 
       it 'cleans up secrets' do
@@ -129,6 +140,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
         allow(kubevirt_helper).to receive(:cleanup_temp_files)
+        allow(kubevirt_helper).to receive(:cleanup_data_volumes)
       end
 
       it 'still cleans up temp files when cleanup_vms raises' do
@@ -167,6 +179,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
         allow(kubevirt_helper).to receive(:cleanup_temp_files)
+        allow(kubevirt_helper).to receive(:cleanup_data_volumes)
         hypervisor_with_port_forward.cleanup(delay: 0.25)
       end
 
@@ -201,6 +214,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
         allow(kubevirt_helper).to receive(:cleanup_temp_files)
+        allow(kubevirt_helper).to receive(:cleanup_data_volumes)
         hypervisor_with_port_forward.cleanup
       end
 
@@ -235,6 +249,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
         allow(kubevirt_helper).to receive(:cleanup_temp_files)
+        allow(kubevirt_helper).to receive(:cleanup_data_volumes)
       end
 
       it 'does not raise and continues with cluster-side cleanup' do
@@ -1841,6 +1856,7 @@ RSpec.describe Beaker::Kubevirt do
       allow(kubevirt_helper).to receive(:cleanup_secrets)
       allow(kubevirt_helper).to receive(:cleanup_services)
       allow(kubevirt_helper).to receive(:cleanup_temp_files)
+      allow(kubevirt_helper).to receive(:cleanup_data_volumes)
     end
 
     describe '#initialize' do
@@ -1972,6 +1988,7 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_secrets)
         allow(kubevirt_helper).to receive(:cleanup_services)
         allow(kubevirt_helper).to receive(:cleanup_temp_files)
+        allow(kubevirt_helper).to receive(:cleanup_data_volumes)
       end
 
       it 'cleanup_on_exit does not perform cleanup' do

@@ -195,6 +195,9 @@ module Beaker
       @logger.info("Cleaning up resources in namespace: #{@namespace}")
       begin
         safe_cleanup('cleaning up VMs') { @kubevirt_helper.cleanup_vms(@test_group_identifier) }
+        # DataVolumes (and their backing PVCs) — VMs first so the VMI
+        # releases the PVC before the DV delete tries to reclaim storage.
+        safe_cleanup('cleaning up DataVolumes') { @kubevirt_helper.cleanup_data_volumes(@test_group_identifier) }
         safe_cleanup('cleaning up secrets') { @kubevirt_helper.cleanup_secrets(@test_group_identifier) }
         safe_cleanup('cleaning up services') { @kubevirt_helper.cleanup_services(@test_group_identifier) }
       ensure

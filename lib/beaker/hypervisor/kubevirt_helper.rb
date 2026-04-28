@@ -8,7 +8,7 @@ require 'base64'
 module Beaker
   # Helper class for KubeVirt operations
   class KubevirtHelper
-    attr_reader :namespace, :options, :k8s_client, :kubevirt_client
+    attr_reader :namespace, :options, :k8s_client, :kubevirt_client, :cdi_client
 
     def initialize(options)
       @options = options
@@ -27,6 +27,7 @@ module Beaker
       # Allow injection of clients for testing
       @k8s_client = options[:k8s_client]
       @kubevirt_client = options[:kubevirt_client]
+      @cdi_client = options[:cdi_client]
 
       # Only setup clients if not provided (for testing)
       return if @k8s_client && @kubevirt_client
@@ -36,6 +37,7 @@ module Beaker
       @original_ssl_options = extract_ssl_from_kubeconfig
       setup_kubernetes_client
       setup_kubevirt_client
+      setup_cdi_client unless @cdi_client
     end
 
     ##
@@ -202,6 +204,42 @@ module Beaker
     end
 
     ##
+    # Cleanup DataVolumes associated with a test group. No-op if CDI isn't
+    # available on the cluster (the @cdi_client stays nil in that case).
+    # @param [String] test_group_identifier The identifier for the test group
+    def cleanup_data_volumes(test_group_identifier)
+      return unless @cdi_client
+
+      @logger.info("Cleaning up DataVolumes for test group: #{test_group_identifier}")
+      label_selector = "beaker/test-group=#{test_group_identifier}"
+
+      begin
+        dvs = @cdi_client.get_data_volumes(namespace: @namespace, label_selector: label_selector)
+      rescue StandardError => e
+        @logger.warn("Failed to list DataVolumes for cleanup: #{e.class}: #{e.message}")
+        return
+      end
+
+      @logger.info("Found #{dvs.length} DataVolume(s) with label #{label_selector}")
+
+      dvs.each do |dv|
+        md = dv[:metadata] || dv['metadata']
+        dv_name = md[:name] || md['name'] if md
+        unless dv_name && !dv_name.empty?
+          @logger.error("Skipping DataVolume with missing name: #{dv.inspect[0, 200]}")
+          next
+        end
+
+        @cdi_client.delete_data_volume(dv_name, @namespace)
+        @logger.info("Deleted DataVolume #{dv_name}")
+      rescue Kubeclient::ResourceNotFoundError
+        @logger.debug("DataVolume #{dv_name} not found during cleanup")
+      rescue StandardError => e
+        @logger.error("Error deleting DataVolume #{dv_name}: #{e.message}")
+      end
+    end
+
+    ##
     # Setup port forwarding for a VM
     # @param [String] vm_name The VM name
     # @param [Integer] vm_port The VM port to forward
@@ -345,6 +383,29 @@ module Beaker
       # For testing or when Kubeclient can't parse, fall back to manual parsing
       @logger&.warn("Failed to use Kubeclient::Config, falling back to manual parsing: #{e.message}")
       setup_kubevirt_client_manual
+    end
+
+    ##
+    # Setup CDI (Containerized Data Importer) API client used for managing
+    # DataVolumes. Best-effort: clusters without CDI installed will still be
+    # able to provision container-disk / direct-PVC VMs. We probe the API
+    # group with a `discover` call so that clusters lacking CDI leave
+    # @cdi_client nil rather than appearing live and warning on every
+    # cleanup.
+    def setup_cdi_client
+      config = Kubeclient::Config.new(load_kubeconfig, File.dirname(@kubeconfig_path))
+      context_config = config.context(@kubecontext)
+      client = Kubeclient::Client.new(
+        "#{context_config.api_endpoint}/apis/cdi.kubevirt.io",
+        'v1beta1',
+        ssl_options: context_config.ssl_options,
+        auth_options: context_config.auth_options,
+      )
+      client.discover
+      @cdi_client = client
+    rescue StandardError => e
+      @logger&.debug("CDI client setup skipped: #{e.class}: #{e.message}")
+      @cdi_client = nil
     end
 
     ##
