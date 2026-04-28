@@ -203,7 +203,15 @@ class KubeVirtPortForwarder
 
     if should_stop_reactor
       EventMachine.stop if EventMachine.reactor_running?
-      @reactor_thread&.join
+      begin
+        @reactor_thread&.join
+      # Thread#join re-raises whatever the thread terminated with, which can
+      # be a non-StandardError (e.g. LoadError from a native-extension issue
+      # we already surfaced via wait_for_reactor_ready). Swallow it during
+      # teardown so it doesn't abort the rest of cleanup.
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        @logger.debug("Reactor thread terminated with exception during shutdown: #{e.class}: #{e.message}")
+      end
       @logger.debug('Stopped EventMachine reactor (owned by this forwarder)')
     else
       @logger.debug('Not stopping EventMachine reactor (owned by another forwarder)')

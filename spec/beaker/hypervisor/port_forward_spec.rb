@@ -162,6 +162,57 @@ RSpec.describe KubeVirtPortForwarder do
 
       expect(forwarder.state).to eq(initial_state)
     end
+
+    # Issue: EventMachine reactor startup could spin forever if the reactor
+    # thread died (e.g. native lib mismatch) or never became ready.
+    context 'when the EventMachine reactor fails to start' do
+      it 'fails fast and reports the original cause if the reactor thread raises a StandardError' do
+        boom = RuntimeError.new('boom from reactor thread')
+        allow(EventMachine).to receive(:run).and_raise(boom)
+
+        captured = nil
+        forwarder.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder.start
+
+        expect(forwarder.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to include('EventMachine reactor thread exited during startup')
+        expect(captured.message).to include('boom from reactor thread')
+        expect(captured.cause).to eq(boom)
+      end
+
+      it 'fails fast and reports the original cause if the reactor thread raises a non-StandardError' do
+        boom = LoadError.new('libcrypto symbol mismatch')
+        allow(EventMachine).to receive(:run).and_raise(boom)
+
+        captured = nil
+        forwarder.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder.start
+
+        expect(forwarder.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to include('LoadError')
+        expect(captured.message).to include('libcrypto symbol mismatch')
+        expect(captured.cause).to eq(boom)
+      end
+
+      it 'fails fast with a deadline error if the reactor never becomes ready' do
+        stub_const("#{described_class}::REACTOR_STARTUP_TIMEOUT", 0.1)
+        # Reactor thread stays alive but never flips reactor_running? to true
+        allow(EventMachine).to receive(:run) { sleep 5 }
+
+        captured = nil
+        forwarder.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder.start
+
+        expect(forwarder.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to match(/reactor did not become ready within/)
+      end
+    end
   end
 
   describe '#stop' do
