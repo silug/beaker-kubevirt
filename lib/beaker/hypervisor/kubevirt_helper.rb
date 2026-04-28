@@ -239,6 +239,9 @@ module Beaker
     # Create a NodePort service for SSH access
     # @param [String] vm_name The VM name
     # @param [String] service_name The service name
+    # @param [String, nil] test_group_identifier Test-group identifier applied as
+    #   the +beaker/test-group+ label so +cleanup_services+ can match the
+    #   service. When +nil+, only the +beaker/vm+ label is set (legacy behavior).
     # @return [Hash] Service object
     def create_nodeport_service(vm_name, service_name, test_group_identifier = nil)
       labels = { 'beaker/vm' => vm_name }
