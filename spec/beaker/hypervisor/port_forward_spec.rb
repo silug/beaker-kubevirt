@@ -200,8 +200,10 @@ RSpec.describe KubeVirtPortForwarder do
 
       it 'fails fast with a deadline error if the reactor never becomes ready' do
         stub_const("#{described_class}::REACTOR_STARTUP_TIMEOUT", 0.1)
-        # Reactor thread stays alive but never flips reactor_running? to true
-        allow(EventMachine).to receive(:run) { sleep 5 }
+        # Reactor thread stays alive but never flips reactor_running? to true.
+        # Sleep just long enough to outlast the stubbed startup deadline; the
+        # bounded join + kill in stop ensures shutdown doesn't block on it.
+        allow(EventMachine).to receive(:run) { sleep 0.5 }
 
         captured = nil
         forwarder.instance_variable_set(:@on_error, ->(e) { captured = e })
@@ -211,6 +213,23 @@ RSpec.describe KubeVirtPortForwarder do
         expect(forwarder.state).to eq(:stopped)
         expect(captured).to be_a(RuntimeError)
         expect(captured.message).to match(/reactor did not become ready within/)
+      end
+
+      it 'force-kills the reactor thread if it does not exit within the shutdown timeout' do
+        stub_const("#{described_class}::REACTOR_STARTUP_TIMEOUT", 0.1)
+        stub_const("#{described_class}::REACTOR_SHUTDOWN_TIMEOUT", 0.1)
+        # Reactor thread stays alive much longer than the shutdown timeout.
+        allow(EventMachine).to receive(:run) { sleep 10 }
+
+        forwarder.instance_variable_set(:@on_error, ->(_) {})
+
+        expect(logger).to receive(:warn).with(/Force-killing reactor thread/)
+
+        forwarder.start
+
+        reactor_thread = forwarder.instance_variable_get(:@reactor_thread)
+        expect(forwarder.state).to eq(:stopped)
+        expect(reactor_thread).not_to be_alive
       end
     end
   end

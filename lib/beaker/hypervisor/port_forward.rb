@@ -42,6 +42,12 @@ class KubeVirtPortForwarder
   # is wrong (native-ext load failure, incompatible libcrypto, etc.).
   REACTOR_STARTUP_TIMEOUT = 5
 
+  # Upper bound on how long we'll wait for the reactor thread to exit during
+  # shutdown after EventMachine.stop. If startup timed out, the reactor thread
+  # is alive but hung and EventMachine.stop is a no-op, so we must kill it
+  # rather than block forever on join.
+  REACTOR_SHUTDOWN_TIMEOUT = 5
+
   # Class-level tracking of EventMachine reactor ownership
   # EventMachine has a single global reactor, so we need to track which
   # forwarder instance started it to avoid stopping it prematurely
@@ -203,15 +209,7 @@ class KubeVirtPortForwarder
 
     if should_stop_reactor
       EventMachine.stop if EventMachine.reactor_running?
-      begin
-        @reactor_thread&.join
-      # Thread#join re-raises whatever the thread terminated with, which can
-      # be a non-StandardError (e.g. LoadError from a native-extension issue
-      # we already surfaced via wait_for_reactor_ready). Swallow it during
-      # teardown so it doesn't abort the rest of cleanup.
-      rescue Exception => e # rubocop:disable Lint/RescueException
-        @logger.debug("Reactor thread terminated with exception during shutdown: #{e.class}: #{e.message}")
-      end
+      shut_down_reactor_thread
       @logger.debug('Stopped EventMachine reactor (owned by this forwarder)')
     else
       @logger.debug('Not stopping EventMachine reactor (owned by another forwarder)')
@@ -222,6 +220,33 @@ class KubeVirtPortForwarder
   end
 
   private
+
+  # Wait for the reactor thread to exit, with a bounded timeout and a
+  # last-resort kill. Mirrors the connection-thread shutdown logic above.
+  # The reactor thread's exception (if any) was already surfaced via
+  # Thread#value in wait_for_reactor_ready, so swallowing the same class
+  # here during teardown is safe; signals (Interrupt/SystemExit) propagate.
+  def shut_down_reactor_thread
+    return unless @reactor_thread
+
+    deadline_thread = @reactor_thread
+    begin
+      joined = deadline_thread.join(REACTOR_SHUTDOWN_TIMEOUT)
+    rescue StandardError, ScriptError => e
+      @logger.debug("Reactor thread terminated with exception during shutdown: #{e.class}: #{e.message}")
+      return
+    end
+
+    return if joined
+
+    @logger.warn("Force-killing reactor thread that didn't shut down within #{REACTOR_SHUTDOWN_TIMEOUT}s")
+    deadline_thread.kill
+    begin
+      deadline_thread.join
+    rescue StandardError, ScriptError
+      nil
+    end
+  end
 
   # Block until EventMachine.reactor_running? becomes true, or fail fast
   # if the reactor thread died during startup or the deadline elapses.
