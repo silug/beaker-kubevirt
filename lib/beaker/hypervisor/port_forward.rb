@@ -227,11 +227,11 @@ class KubeVirtPortForwarder
   # Thread#value in wait_for_reactor_ready, so swallowing the same class
   # here during teardown is safe; signals (Interrupt/SystemExit) propagate.
   def shut_down_reactor_thread
-    return unless @reactor_thread
+    reactor_thread = @reactor_thread
+    return unless reactor_thread
 
-    deadline_thread = @reactor_thread
     begin
-      joined = deadline_thread.join(REACTOR_SHUTDOWN_TIMEOUT)
+      joined = reactor_thread.join(REACTOR_SHUTDOWN_TIMEOUT)
     rescue StandardError, ScriptError => e
       @logger.debug("Reactor thread terminated with exception during shutdown: #{e.class}: #{e.message}")
       return
@@ -240,12 +240,17 @@ class KubeVirtPortForwarder
     return if joined
 
     @logger.warn("Force-killing reactor thread that didn't shut down within #{REACTOR_SHUTDOWN_TIMEOUT}s")
-    deadline_thread.kill
+    reactor_thread.kill
+    # Thread#kill won't interrupt an uninterruptible native call, so bound this
+    # join too — we'd rather leak a hung thread than block shutdown forever.
     begin
-      deadline_thread.join
+      joined = reactor_thread.join(REACTOR_SHUTDOWN_TIMEOUT)
     rescue StandardError, ScriptError
-      nil
+      joined = true
     end
+    return if joined
+
+    @logger.error("Reactor thread still alive #{REACTOR_SHUTDOWN_TIMEOUT}s after kill; abandoning it (likely stuck in a native call)")
   end
 
   # Block until EventMachine.reactor_running? becomes true, or fail fast
