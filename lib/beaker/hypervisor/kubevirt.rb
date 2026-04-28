@@ -173,16 +173,20 @@ module Beaker
         host_name = host.respond_to?(:name) ? host.name : host['name']
         @logger.debug("Stopping port-forwarder for host: #{host_name}")
         host['port_forwarder'].stop if host['port_forwarder'].respond_to?(:stop)
-        Timeout.timeout(timeout) do
-          loop do
-            break if host['port_forwarder'].state == :stopped
+        begin
+          Timeout.timeout(timeout) do
+            loop do
+              break if host['port_forwarder'].state == :stopped
 
-            @logger.debug("Waiting for port-forwarder to stop for host: #{host_name}")
-            sleep delay
+              @logger.debug("Waiting for port-forwarder to stop for host: #{host_name}")
+              sleep delay
+            end
           end
         rescue Timeout::Error
-          @logger.warn("Port-forwarder for host #{host_name} did not stop in time")
-          raise
+          # Don't let one stuck forwarder block cluster-side cleanup; the
+          # forwarder's internal thread-kill path has already bounded the
+          # guest-side work by this point.
+          @logger.error("Port-forwarder for host #{host_name} did not stop within #{timeout}s; proceeding with cluster-side cleanup anyway")
         rescue StandardError => e
           @logger.error("Error stopping port-forwarder for host #{host_name}: #{e}")
         end

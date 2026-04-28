@@ -237,10 +237,14 @@ RSpec.describe Beaker::Kubevirt do
         allow(kubevirt_helper).to receive(:cleanup_temp_files)
       end
 
-      it 'raises a timeout error' do
+      it 'does not raise and continues with cluster-side cleanup' do
         expect do
           hypervisor_with_port_forward.cleanup(timeout: 0.25, delay: 0.5)
-        end.to raise_error(Timeout::Error)
+        end.not_to raise_error
+
+        expect(kubevirt_helper).to have_received(:cleanup_vms)
+        expect(kubevirt_helper).to have_received(:cleanup_secrets)
+        expect(kubevirt_helper).to have_received(:cleanup_services)
       end
     end
   end
