@@ -363,18 +363,13 @@ class KubeVirtPortForwarder
     # Mutex to synchronize access to client_socket from multiple threads
     socket_mutex = Mutex.new
 
-    # Read timeout to prevent hanging indefinitely
-    read_timeout = 300 # 5 minutes
-
+    # No client-silence timeout: net-ssh defers keepalive while output is
+    # streaming server->client, so long-running commands legitimately go
+    # minutes without any client->ws bytes. We rely on EOF/RST from the OS
+    # when the SSH client dies, and on the WS ping above to detect the
+    # upstream half going away.
     to_ws = Thread.new do
       loop do
-        # Use wait_readable to implement a read timeout
-        unless client_socket.wait_readable(read_timeout)
-          # Timeout occurred
-          @logger.warn("Client socket read timeout after #{read_timeout} seconds. Closing connection.")
-          break
-        end
-
         data = client_socket.readpartial(4096)
         if use_channels
           websocket.send(DATA_CHANNEL + data)

@@ -920,13 +920,6 @@ RSpec.describe KubeVirtPortForwarder do
       allow(client_socket).to receive(:readpartial).and_raise(IOError)
       allow(client_socket).to receive(:write)
       allow(client_socket).to receive(:close)
-
-      # Stub wait_readable to work with mock sockets
-      # Tests that specifically test timeout behavior will override this
-      allow(client_socket).to receive(:wait_readable) do |_timeout|
-        # Return truthy value immediately (simulating data available)
-        client_socket
-      end
     end
 
     # Issue #5: Missing error handling in write operations
@@ -950,35 +943,26 @@ RSpec.describe KubeVirtPortForwarder do
       expect { message_handlers.first.call(event) if message_handlers.any? }.not_to raise_error
     end
 
-    # Issue #6: No timeout on socket reads
-    # FIXED: Now uses wait_readable with a 5-minute timeout
-    it 'times out after 5 minutes of inactivity on client socket read' do
-      # Mock a socket that never returns data
-      hanging_socket = instance_double(TCPSocket)
-      allow(hanging_socket).to receive(:close)
+    # We deliberately do NOT enforce a client-silence timeout: net-ssh defers
+    # keepalive while the server is streaming output back, so a healthy
+    # long-running SSH session can legitimately have zero client->ws bytes
+    # for many minutes. Dead peers are detected via EOF/RST from the OS, and
+    # the upstream half is covered by the WebSocket ping.
+    it 'does not enforce a client-silence timeout' do
+      idle_socket = instance_double(TCPSocket)
+      allow(idle_socket).to receive(:close)
+      # readpartial blocks until data or EOF; never returning simulates a
+      # client that's quiet because the server is doing the talking.
+      allow(idle_socket).to receive(:readpartial) { sleep 5 }
 
-      # Mock wait_readable to simulate timeout after a short delay (not 5 minutes!)
-      wait_readable_called = false
-      allow(hanging_socket).to receive(:wait_readable) do |_timeout|
-        wait_readable_called = true
-        # Simulate timeout by returning nil
-        nil
-      end
+      proxy_thread = Thread.new { forwarder.send(:proxy_traffic, idle_socket, websocket) }
+      sleep 0.3
 
-      # This should timeout and exit cleanly
-      proxy_thread = Thread.new do
-        forwarder.send(:proxy_traffic, hanging_socket, websocket)
-      end
+      expect(idle_socket).not_to have_received(:close)
+      expect(proxy_thread.alive?).to be true
 
-      # Give it time to call wait_readable
-      sleep 0.2
-
-      # Confirm wait_readable was called with timeout
-      expect(wait_readable_called).to be true
-
-      # Thread should exit after timeout
+      proxy_thread.kill
       proxy_thread.join(1)
-      expect(proxy_thread.alive?).to be false
     end
 
     # Fix: EOFError handling
