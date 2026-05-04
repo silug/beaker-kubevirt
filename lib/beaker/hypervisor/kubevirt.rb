@@ -1011,7 +1011,6 @@ module Beaker
       ssh_options['keepalive']          = true unless ssh_options.key?('keepalive')
       ssh_options['keepalive_interval'] = 60   unless ssh_options.key?('keepalive_interval')
       ssh_options['keepalive_maxcount'] = 5    unless ssh_options.key?('keepalive_maxcount')
-      host['ssh'] = ssh_options
 
       key_pair = find_ssh_key_pair
 
@@ -1023,13 +1022,14 @@ module Beaker
         merged_keys = [key_pair[:private_key_path]] + existing_keys
         merged_keys.uniq!
         ssh_options['keys'] = merged_keys
-        host['ssh'] = ssh_options
 
         @logger.info("Configured SSH to use private key #{File.basename(key_pair[:private_key_path])}")
         @logger.debug("SSH private key full path: #{key_pair[:private_key_path]}")
       else
         @logger.warn('Could not determine private key path, SSH will use default keys')
       end
+
+      host['ssh'] = ssh_options
     end
 
     ##

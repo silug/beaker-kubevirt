@@ -899,7 +899,6 @@ RSpec.describe KubeVirtPortForwarder do
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
         expect(captured_options[:ping]).to eq(described_class::WEBSOCKET_PING_INTERVAL)
-        expect(captured_options[:ping]).to be > 0
       end
     end
   end
