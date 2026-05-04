@@ -863,6 +863,45 @@ RSpec.describe KubeVirtPortForwarder do
         expect(captured_headers).not_to have_key('Authorization')
       end
     end
+
+    context 'with WebSocket keepalive' do
+      it 'enables periodic ping frames so upstream proxies don\'t idle-close the connection' do
+        kube_client = instance_double(
+          Kubeclient::Client,
+          api_endpoint: URI.parse('https://kubernetes.example.com/api'),
+          auth_options: { bearer_token: 'tok' },
+          ssl_options: {},
+        )
+        forwarder = described_class.new(
+          kube_client: kube_client,
+          namespace: 'default',
+          vmi_name: 'test-vm',
+          target_port: 22,
+          local_port: 10_022,
+          logger: logger,
+        )
+
+        client_socket = instance_double(TCPSocket, closed?: false)
+
+        captured_options = nil
+        allow(Faye::WebSocket::Client).to receive(:new) do |_url, _protocols, options|
+          captured_options = options
+          instance_double(Faye::WebSocket::Client, on: nil)
+        end
+
+        connection_status_q = Queue.new
+        allow(Queue).to receive(:new).and_return(connection_status_q)
+        allow(EventMachine).to receive(:schedule) do |&block|
+          block.call
+          connection_status_q.push(RuntimeError.new('Connection failed'))
+        end
+
+        forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
+
+        expect(captured_options[:ping]).to eq(described_class::WEBSOCKET_PING_INTERVAL)
+        expect(captured_options[:ping]).to be > 0
+      end
+    end
   end
 
   describe '#proxy_traffic' do

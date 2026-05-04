@@ -36,6 +36,11 @@ class KubeVirtPortForwarder
   # The channel byte for the error stream from the server.
   ERROR_CHANNEL = "\x01"
 
+  # Send a WebSocket ping every N seconds. SSH keepalive packets are payload
+  # frames that some upstream WS-aware proxies don't count against their idle
+  # timer; protocol-level pings always do.
+  WEBSOCKET_PING_INTERVAL = 60
+
   # Class-level tracking of EventMachine reactor ownership
   # EventMachine has a single global reactor, so we need to track which
   # forwarder instance started it to avoid stopping it prematurely
@@ -287,7 +292,10 @@ class KubeVirtPortForwarder
 
       EventMachine.schedule do
         protocols = [PLAIN_STREAM_PROTOCOL]
-        ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: tls_options)
+        ws = Faye::WebSocket::Client.new(url, protocols,
+                                         headers: headers,
+                                         tls: tls_options,
+                                         ping: WEBSOCKET_PING_INTERVAL)
 
         ws.on :open do |_event|
           @logger.debug("WebSocket open to VMI '#{@vmi_name}' (protocol: #{ws.protocol || 'none'})")
