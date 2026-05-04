@@ -1004,25 +1004,32 @@ module Beaker
     # Ensures the private key used for SSH matches the public key injected via cloud-init
     # @param [Host] host The host to configure
     def configure_ssh_keys(host)
+      ssh_options = host['ssh'] || {}
+
+      # Keep idle SSH sessions alive: long-running commands with no output
+      # otherwise hit kube-apiserver / port-forward proxy / NAT idle timeouts.
+      ssh_options['keepalive']          = true unless ssh_options.key?('keepalive')
+      ssh_options['keepalive_interval'] = 60   unless ssh_options.key?('keepalive_interval')
+      ssh_options['keepalive_maxcount'] = 5    unless ssh_options.key?('keepalive_maxcount')
+
       key_pair = find_ssh_key_pair
 
       # Only set the private key path if we found a matching pair
       if key_pair[:private_key_path]
-        # Get the ssh options, modify them, and set them back
-        ssh_options = host['ssh'] || {}
         # Prepend the matching key, preserve any pre-existing keys so fallbacks
         # (agent-forwarded, project-wide CI key) still work if ours is unusable.
         existing_keys = Array(ssh_options['keys'])
         merged_keys = [key_pair[:private_key_path]] + existing_keys
         merged_keys.uniq!
         ssh_options['keys'] = merged_keys
-        host['ssh'] = ssh_options
 
         @logger.info("Configured SSH to use private key #{File.basename(key_pair[:private_key_path])}")
         @logger.debug("SSH private key full path: #{key_pair[:private_key_path]}")
       else
         @logger.warn('Could not determine private key path, SSH will use default keys')
       end
+
+      host['ssh'] = ssh_options
     end
 
     ##

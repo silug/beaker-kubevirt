@@ -93,6 +93,7 @@ CONFIG:
 Notes:
 - Several per-host options support global fallbacks via `CONFIG` (e.g., `kubevirt_cpus`, `kubevirt_memory`, `kubevirt_vm_ssh_port`).
 - The `networks` key for Multus is intentionally unprefixed (use `networks`, not `kubevirt_networks`).
+- Long-running commands aren't killed by idle-timeout drops, even when output streams in only one direction (e.g., a Windows scanner running for many minutes). The `port-forward` proxy no longer enforces a client-side read-silence timeout (it relied on net-ssh keepalive packets that net-ssh suppresses while server output is flowing) and instead sends a WebSocket protocol ping every 60s to keep the upstream tunnel alive. net-ssh keepalive defaults are also tightened to `keepalive_interval: 60`, `keepalive_maxcount: 5` — Beaker already enables `keepalive: true` — which protects `multus` and `nodeport` modes against NAT/conntrack timeouts. Override per-host under `ssh:` if needed.
 
 ### VM Image Formats
 
