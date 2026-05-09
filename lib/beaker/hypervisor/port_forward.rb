@@ -270,7 +270,12 @@ class KubeVirtPortForwarder
     target_port = Integer(@target_port, exception: false)
     raise ArgumentError, "Invalid target port: #{@target_port.inspect}. Expected an integer between 1 and 65535." unless target_port&.between?(1, 65_535)
 
-    url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{ns}/virtualmachineinstances/#{vmi}/portforward/#{target_port}"
+    # Use the protocol-suffixed `/portforward/<port>/tcp` form. Both this and
+    # the bare `/portforward/<port>` route are registered in KubeVirt 1.7+,
+    # but some API-aggregation paths (notably Rancher's cluster proxy against
+    # KubeVirt 1.8) return 404 on the bare form. The `/tcp` form is what
+    # `virtctl port-forward` sends and works on every supported version.
+    url = "#{base_ws_url}/apis/subresources.kubevirt.io/v1/namespaces/#{ns}/virtualmachineinstances/#{vmi}/portforward/#{target_port}/tcp"
     @logger.debug("WebSocket URL: #{url}")
 
     auth_token = @kube_client.auth_options[:bearer_token]
