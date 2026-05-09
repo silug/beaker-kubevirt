@@ -48,6 +48,11 @@ class KubeVirtPortForwarder
   # rather than block forever on join.
   REACTOR_SHUTDOWN_TIMEOUT = 5
 
+  # Send a WebSocket ping every N seconds. SSH keepalive packets are payload
+  # frames that some upstream WS-aware proxies don't count against their idle
+  # timer; protocol-level pings always do.
+  WEBSOCKET_PING_INTERVAL = 60
+
   # Class-level tracking of EventMachine reactor ownership
   # EventMachine has a single global reactor, so we need to track which
   # forwarder instance started it to avoid stopping it prematurely
@@ -378,7 +383,10 @@ class KubeVirtPortForwarder
 
       EventMachine.schedule do
         protocols = [PLAIN_STREAM_PROTOCOL]
-        ws = Faye::WebSocket::Client.new(url, protocols, headers: headers, tls: tls_options)
+        ws = Faye::WebSocket::Client.new(url, protocols,
+                                         headers: headers,
+                                         tls: tls_options,
+                                         ping: WEBSOCKET_PING_INTERVAL)
 
         ws.on :open do |_event|
           @logger.debug("WebSocket open to VMI '#{@vmi_name}' (protocol: #{ws.protocol || 'none'})")
@@ -446,18 +454,13 @@ class KubeVirtPortForwarder
     # Mutex to synchronize access to client_socket from multiple threads
     socket_mutex = Mutex.new
 
-    # Read timeout to prevent hanging indefinitely
-    read_timeout = 300 # 5 minutes
-
+    # No client-silence timeout: net-ssh defers keepalive while output is
+    # streaming server->client, so long-running commands legitimately go
+    # minutes without any client->ws bytes. We rely on EOF/RST from the OS
+    # when the SSH client dies, and on the WS ping above to detect the
+    # upstream half going away.
     to_ws = Thread.new do
       loop do
-        # Use wait_readable to implement a read timeout
-        unless client_socket.wait_readable(read_timeout)
-          # Timeout occurred
-          @logger.warn("Client socket read timeout after #{read_timeout} seconds. Closing connection.")
-          break
-        end
-
         data = client_socket.readpartial(4096)
         if use_channels
           websocket.send(DATA_CHANNEL + data)

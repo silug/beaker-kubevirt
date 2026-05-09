@@ -772,6 +772,47 @@ RSpec.describe Beaker::Kubevirt do
         expect(host['ssh']['keys']).to be_nil
       end
     end
+
+    context 'with SSH keepalive defaults' do
+      before do
+        key_pair = { public_key: 'ssh-rsa test-key', private_key_path: '/home/user/.ssh/id_rsa' }
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(key_pair)
+      end
+
+      it 'enables keepalive with sensible defaults when host has no overrides' do
+        hypervisor.send(:configure_ssh_keys, host)
+        expect(host['ssh']).to include(
+          'keepalive' => true,
+          'keepalive_interval' => 60,
+          'keepalive_maxcount' => 5,
+        )
+      end
+
+      it 'sets keepalive defaults even when no private key was found' do
+        allow(hypervisor).to receive(:find_ssh_key_pair).and_return(public_key: 'k', private_key_path: nil)
+
+        hypervisor.send(:configure_ssh_keys, host)
+        expect(host['ssh']).to include(
+          'keepalive' => true,
+          'keepalive_interval' => 60,
+          'keepalive_maxcount' => 5,
+        )
+      end
+
+      it 'preserves user-supplied keepalive_interval' do
+        host['ssh'] = { 'keepalive_interval' => 30 }
+        hypervisor.send(:configure_ssh_keys, host)
+        expect(host['ssh']['keepalive_interval']).to eq(30)
+        expect(host['ssh']['keepalive']).to be(true)
+        expect(host['ssh']['keepalive_maxcount']).to eq(5)
+      end
+
+      it 'preserves an explicit keepalive: false from the user' do
+        host['ssh'] = { 'keepalive' => false }
+        hypervisor.send(:configure_ssh_keys, host)
+        expect(host['ssh']['keepalive']).to be(false)
+      end
+    end
   end
 
   describe '#sanitize_k8s_name' do
