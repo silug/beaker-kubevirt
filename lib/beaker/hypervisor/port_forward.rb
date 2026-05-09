@@ -300,7 +300,7 @@ class KubeVirtPortForwarder
     deadline = Time.now + REACTOR_STARTUP_TIMEOUT
     until EventMachine.reactor_running?
       raise 'EventMachine reactor owner cleared before reactor became ready' if self.class.reactor_owner.nil?
-      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if Time.now > deadline
+      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if (Time.now > deadline) && !EventMachine.reactor_running?
 
       sleep 0.1
     end
