@@ -251,7 +251,15 @@ RSpec.describe KubeVirtPortForwarder do
         )
       end
 
-      after { forwarder2.stop if forwarder2.state != :stopped }
+      let(:helper_threads) { [] }
+
+      after do
+        # Make sure background helpers from each example are joined before the
+        # next one runs — they mutate shared class state (@reactor_running,
+        # reactor_owner) and would cause flakes if they leaked across examples.
+        helper_threads.each(&:join)
+        forwarder2.stop if forwarder2.state != :stopped
+      end
 
       it 'does not spawn a second EventMachine.run thread or overwrite reactor_owner' do
         # Simulate forwarder1's reactor still mid-startup: owner is set but
@@ -261,7 +269,7 @@ RSpec.describe KubeVirtPortForwarder do
 
         # Flip the reactor "ready" shortly after forwarder2 starts so its
         # bounded wait completes.
-        Thread.new do
+        helper_threads << Thread.new do
           sleep 0.05
           @reactor_running = true
         end
@@ -277,7 +285,7 @@ RSpec.describe KubeVirtPortForwarder do
         described_class.reactor_owner = forwarder
         @reactor_running = false
 
-        Thread.new do
+        helper_threads << Thread.new do
           sleep 0.05
           described_class.reactor_owner = nil
         end
@@ -289,6 +297,21 @@ RSpec.describe KubeVirtPortForwarder do
 
         expect(forwarder2.state).to eq(:stopped)
         expect(captured.message).to include('reactor owner cleared before reactor became ready')
+      end
+
+      it 'fails fast with a deadline error if the in-progress reactor never becomes ready' do
+        stub_const("#{described_class}::REACTOR_STARTUP_TIMEOUT", 0.1)
+        described_class.reactor_owner = forwarder
+        @reactor_running = false
+
+        captured = nil
+        forwarder2.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder2.start
+
+        expect(forwarder2.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to match(/reactor did not become ready within/)
       end
     end
   end
