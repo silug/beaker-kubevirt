@@ -474,7 +474,7 @@ RSpec.describe KubeVirtPortForwarder do
 
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
-        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22/tcp')
       end
 
       it 'constructs correct WebSocket URL with custom port' do
@@ -510,7 +510,7 @@ RSpec.describe KubeVirtPortForwarder do
 
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
-        expect(captured_url).to eq('wss://kubernetes.example.com:6443/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        expect(captured_url).to eq('wss://kubernetes.example.com:6443/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22/tcp')
       end
 
       it 'constructs correct WebSocket URL from Rancher-style endpoint' do
@@ -547,7 +547,7 @@ RSpec.describe KubeVirtPortForwarder do
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
         # The path prefix /k8s/clusters/local should be preserved
-        expect(captured_url).to eq('wss://rancher.example.com/k8s/clusters/local/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        expect(captured_url).to eq('wss://rancher.example.com/k8s/clusters/local/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22/tcp')
       end
 
       it 'constructs correct WebSocket URL from Rancher-style endpoint with /api path' do
@@ -586,7 +586,7 @@ RSpec.describe KubeVirtPortForwarder do
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
         # The /k8s/clusters/c-m-abcd1234 path should be preserved, but /api should be removed
-        expect(captured_url).to eq('wss://rancher.example.com/k8s/clusters/c-m-abcd1234/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        expect(captured_url).to eq('wss://rancher.example.com/k8s/clusters/c-m-abcd1234/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22/tcp')
       end
 
       it 'does not include default HTTPS port 443 in URL' do
@@ -623,7 +623,7 @@ RSpec.describe KubeVirtPortForwarder do
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
         # Port 443 should not appear in the URL
-        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22/tcp')
         expect(captured_url).not_to include(':443')
       end
 
@@ -662,7 +662,7 @@ RSpec.describe KubeVirtPortForwarder do
         forwarder.send(:establish_websocket_with_retry, client_socket, retries: 1, delay: 0)
 
         # Should not have double slashes in the path (after the protocol)
-        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22')
+        expect(captured_url).to eq('wss://kubernetes.example.com/apis/subresources.kubevirt.io/v1/namespaces/default/virtualmachineinstances/test-vm/portforward/22/tcp')
         # Check that we don't have triple slashes or double slashes in the path
         expect(captured_url).not_to match(%r{://.*//})
       end
