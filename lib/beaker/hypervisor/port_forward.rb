@@ -94,10 +94,16 @@ class KubeVirtPortForwarder
     @shutdown = false
 
     # Start the EventMachine reactor in a dedicated thread to handle WebSocket I/O.
-    # EventMachine has a single global reactor, so we need to check if it's already running
+    # EventMachine has a single global reactor, so we need to check if it's already
+    # running. Guarding only on EventMachine.reactor_running? would race: a second
+    # forwarder entering this block before the first reactor thread has actually
+    # become "running" would also see false, set itself as owner, and spawn a
+    # second EventMachine.run thread. Guard on reactor_owner.nil? as well so the
+    # owner is locked in atomically — a non-owner just waits for the in-progress
+    # reactor to become ready.
     start_reactor = false
     self.class.reactor_owner_mutex.synchronize do
-      unless EventMachine.reactor_running?
+      if self.class.reactor_owner.nil? && !EventMachine.reactor_running?
         start_reactor = true
         self.class.reactor_owner = self
       end
@@ -108,6 +114,7 @@ class KubeVirtPortForwarder
       wait_for_reactor_ready
       @logger.debug('Started EventMachine reactor (owned by this forwarder)')
     else
+      wait_for_existing_reactor_ready
       @logger.debug('Using existing EventMachine reactor (owned by another forwarder)')
     end
 
@@ -275,6 +282,20 @@ class KubeVirtPortForwarder
         raise 'EventMachine reactor thread exited during startup with no exception'
       end
       raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if (Time.now > deadline) && !EventMachine.reactor_running?
+
+      sleep 0.1
+    end
+  end
+
+  # Wait (bounded) for a reactor that another forwarder is starting to become
+  # ready. If the owning forwarder's startup fails, it clears reactor_owner in
+  # its rescue/stop path; if that happens before the reactor came up, we bail
+  # out rather than wait the full deadline.
+  def wait_for_existing_reactor_ready
+    deadline = Time.now + REACTOR_STARTUP_TIMEOUT
+    until EventMachine.reactor_running?
+      raise 'EventMachine reactor owner cleared before reactor became ready' if self.class.reactor_owner.nil?
+      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if Time.now > deadline
 
       sleep 0.1
     end

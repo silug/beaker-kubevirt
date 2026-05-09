@@ -232,6 +232,65 @@ RSpec.describe KubeVirtPortForwarder do
         expect(reactor_thread).not_to be_alive
       end
     end
+
+    # Two forwarders entering the reactor-startup section concurrently must not
+    # both spawn EventMachine.run threads. Even though the first is mid-startup,
+    # EventMachine.reactor_running? is still false until its thread runs — so a
+    # check on reactor_running? alone would let a second forwarder also claim
+    # ownership. Guard on reactor_owner.nil? to make ownership atomic.
+    context 'when another forwarder is mid-startup' do
+      let(:forwarder2) do
+        described_class.new(
+          kube_client: kube_client,
+          namespace: namespace,
+          vmi_name: vmi_name,
+          target_port: target_port,
+          local_port: local_port + 1,
+          logger: logger,
+          on_error: on_error,
+        )
+      end
+
+      after { forwarder2.stop if forwarder2.state != :stopped }
+
+      it 'does not spawn a second EventMachine.run thread or overwrite reactor_owner' do
+        # Simulate forwarder1's reactor still mid-startup: owner is set but
+        # reactor_running? has not flipped to true yet.
+        described_class.reactor_owner = forwarder
+        @reactor_running = false
+
+        # Flip the reactor "ready" shortly after forwarder2 starts so its
+        # bounded wait completes.
+        Thread.new do
+          sleep 0.05
+          @reactor_running = true
+        end
+
+        forwarder2.start
+
+        expect(EventMachine).not_to have_received(:run)
+        expect(described_class.reactor_owner).to eq(forwarder)
+        expect(forwarder2.state).to eq(:running)
+      end
+
+      it 'fails fast if the in-progress owner clears itself before the reactor comes up' do
+        described_class.reactor_owner = forwarder
+        @reactor_running = false
+
+        Thread.new do
+          sleep 0.05
+          described_class.reactor_owner = nil
+        end
+
+        captured = nil
+        forwarder2.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder2.start
+
+        expect(forwarder2.state).to eq(:stopped)
+        expect(captured.message).to include('reactor owner cleared before reactor became ready')
+      end
+    end
   end
 
   describe '#stop' do
