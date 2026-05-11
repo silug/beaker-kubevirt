@@ -36,6 +36,18 @@ class KubeVirtPortForwarder
   # The channel byte for the error stream from the server.
   ERROR_CHANNEL = "\x01"
 
+  # Upper bound on how long we'll wait for EventMachine.reactor_running? to
+  # become true after kicking off EventMachine.run in its own thread. Healthy
+  # startup is well under 100ms; five seconds is only reached when something
+  # is wrong (native-ext load failure, incompatible libcrypto, etc.).
+  REACTOR_STARTUP_TIMEOUT = 5
+
+  # Upper bound on how long we'll wait for the reactor thread to exit during
+  # shutdown after EventMachine.stop. If startup timed out, the reactor thread
+  # is alive but hung and EventMachine.stop is a no-op, so we must kill it
+  # rather than block forever on join.
+  REACTOR_SHUTDOWN_TIMEOUT = 5
+
   # Send a WebSocket ping every N seconds. SSH keepalive packets are payload
   # frames that some upstream WS-aware proxies don't count against their idle
   # timer; protocol-level pings always do.
@@ -87,10 +99,16 @@ class KubeVirtPortForwarder
     @shutdown = false
 
     # Start the EventMachine reactor in a dedicated thread to handle WebSocket I/O.
-    # EventMachine has a single global reactor, so we need to check if it's already running
+    # EventMachine has a single global reactor, so we need to check if it's already
+    # running. Guarding only on EventMachine.reactor_running? would race: a second
+    # forwarder entering this block before the first reactor thread has actually
+    # become "running" would also see false, set itself as owner, and spawn a
+    # second EventMachine.run thread. Guard on reactor_owner.nil? as well so the
+    # owner is locked in atomically — a non-owner just waits for the in-progress
+    # reactor to become ready.
     start_reactor = false
     self.class.reactor_owner_mutex.synchronize do
-      unless EventMachine.reactor_running?
+      if self.class.reactor_owner.nil? && !EventMachine.reactor_running?
         start_reactor = true
         self.class.reactor_owner = self
       end
@@ -98,10 +116,10 @@ class KubeVirtPortForwarder
 
     if start_reactor
       @reactor_thread = Thread.new { EventMachine.run }
-      # Wait for the reactor to be running
-      sleep 0.1 until EventMachine.reactor_running?
+      wait_for_reactor_ready
       @logger.debug('Started EventMachine reactor (owned by this forwarder)')
     else
+      wait_for_existing_reactor_ready
       @logger.debug('Using existing EventMachine reactor (owned by another forwarder)')
     end
 
@@ -203,7 +221,7 @@ class KubeVirtPortForwarder
 
     if should_stop_reactor
       EventMachine.stop if EventMachine.reactor_running?
-      @reactor_thread&.join
+      shut_down_reactor_thread
       @logger.debug('Stopped EventMachine reactor (owned by this forwarder)')
     else
       @logger.debug('Not stopping EventMachine reactor (owned by another forwarder)')
@@ -214,6 +232,86 @@ class KubeVirtPortForwarder
   end
 
   private
+
+  # Wait for the reactor thread to exit, with a bounded timeout and a
+  # last-resort kill. Mirrors the connection-thread shutdown logic above.
+  # The reactor thread's exception (if any) was already surfaced via
+  # Thread#value in wait_for_reactor_ready, so swallowing the same class
+  # here during teardown is safe; signals (Interrupt/SystemExit) propagate.
+  def shut_down_reactor_thread
+    reactor_thread = @reactor_thread
+    return unless reactor_thread
+
+    begin
+      joined = reactor_thread.join(REACTOR_SHUTDOWN_TIMEOUT)
+    rescue StandardError, ScriptError => e
+      @logger.debug("Reactor thread terminated with exception during shutdown: #{e.class}: #{e.message}")
+      return
+    end
+
+    return if joined
+
+    @logger.warn("Force-killing reactor thread that didn't shut down within #{REACTOR_SHUTDOWN_TIMEOUT}s")
+    reactor_thread.kill
+    # Thread#kill won't interrupt an uninterruptible native call, so bound this
+    # join too — we'd rather leak a hung thread than block shutdown forever.
+    begin
+      joined = reactor_thread.join(REACTOR_SHUTDOWN_TIMEOUT)
+    rescue StandardError, ScriptError
+      joined = true
+    end
+    return if joined
+
+    @logger.error("Reactor thread still alive #{REACTOR_SHUTDOWN_TIMEOUT}s after kill; abandoning it (likely stuck in a native call)")
+  end
+
+  # Block until EventMachine.reactor_running? becomes true, or fail fast
+  # if the reactor thread died during startup or the deadline elapses.
+  def wait_for_reactor_ready
+    deadline = monotonic_now + REACTOR_STARTUP_TIMEOUT
+    until EventMachine.reactor_running?
+      unless @reactor_thread.alive?
+        begin
+          @reactor_thread.value # re-raises the thread's exception, if any
+        # The reactor thread typically dies from non-StandardError causes such as
+        # LoadError (native extension failure) or other ScriptError subclasses.
+        # Rescue Exception so we can wrap and re-raise *any* cause with context;
+        # we do not swallow it (raise below preserves :cause and backtrace).
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          startup_error = RuntimeError.new(
+            "EventMachine reactor thread exited during startup: #{e.class}: #{e.message}",
+          )
+          startup_error.set_backtrace(e.backtrace)
+          raise startup_error, cause: e
+        end
+        raise 'EventMachine reactor thread exited during startup with no exception'
+      end
+      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if (monotonic_now > deadline) && !EventMachine.reactor_running?
+
+      sleep 0.1
+    end
+  end
+
+  # Wait (bounded) for a reactor that another forwarder is starting to become
+  # ready. If the owning forwarder's startup fails, it clears reactor_owner in
+  # its rescue/stop path; if that happens before the reactor came up, we bail
+  # out rather than wait the full deadline.
+  def wait_for_existing_reactor_ready
+    deadline = monotonic_now + REACTOR_STARTUP_TIMEOUT
+    until EventMachine.reactor_running?
+      raise 'EventMachine reactor owner cleared before reactor became ready' if self.class.reactor_owner.nil?
+      raise "EventMachine reactor did not become ready within #{REACTOR_STARTUP_TIMEOUT}s" if (monotonic_now > deadline) && !EventMachine.reactor_running?
+
+      sleep 0.1
+    end
+  end
+
+  # Monotonic clock for deadline arithmetic. Time.now is wall-clock and can
+  # jump forwards/backwards on NTP adjustments, producing spurious timeouts
+  # or longer-than-expected waits.
+  def monotonic_now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
 
   # Handles a single client connection from start to finish.
   # @param client_socket [TCPSocket] The socket connected to the client.

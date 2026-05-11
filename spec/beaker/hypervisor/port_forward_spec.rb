@@ -162,6 +162,158 @@ RSpec.describe KubeVirtPortForwarder do
 
       expect(forwarder.state).to eq(initial_state)
     end
+
+    # Issue: EventMachine reactor startup could spin forever if the reactor
+    # thread died (e.g. native lib mismatch) or never became ready.
+    context 'when the EventMachine reactor fails to start' do
+      it 'fails fast and reports the original cause if the reactor thread raises a StandardError' do
+        boom = RuntimeError.new('boom from reactor thread')
+        allow(EventMachine).to receive(:run).and_raise(boom)
+
+        captured = nil
+        forwarder.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder.start
+
+        expect(forwarder.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to include('EventMachine reactor thread exited during startup')
+        expect(captured.message).to include('boom from reactor thread')
+        expect(captured.cause).to eq(boom)
+      end
+
+      it 'fails fast and reports the original cause if the reactor thread raises a non-StandardError' do
+        boom = LoadError.new('libcrypto symbol mismatch')
+        allow(EventMachine).to receive(:run).and_raise(boom)
+
+        captured = nil
+        forwarder.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder.start
+
+        expect(forwarder.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to include('LoadError')
+        expect(captured.message).to include('libcrypto symbol mismatch')
+        expect(captured.cause).to eq(boom)
+      end
+
+      it 'fails fast with a deadline error if the reactor never becomes ready' do
+        stub_const("#{described_class}::REACTOR_STARTUP_TIMEOUT", 0.1)
+        # Reactor thread stays alive but never flips reactor_running? to true.
+        # Sleep just long enough to outlast the stubbed startup deadline; the
+        # bounded join + kill in stop ensures shutdown doesn't block on it.
+        allow(EventMachine).to receive(:run) { sleep 0.5 }
+
+        captured = nil
+        forwarder.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder.start
+
+        expect(forwarder.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to match(/reactor did not become ready within/)
+      end
+
+      it 'force-kills the reactor thread if it does not exit within the shutdown timeout' do
+        stub_const("#{described_class}::REACTOR_STARTUP_TIMEOUT", 0.1)
+        stub_const("#{described_class}::REACTOR_SHUTDOWN_TIMEOUT", 0.1)
+        # Reactor thread stays alive much longer than the shutdown timeout.
+        allow(EventMachine).to receive(:run) { sleep 10 }
+
+        forwarder.instance_variable_set(:@on_error, ->(_) {})
+
+        expect(logger).to receive(:warn).with(/Force-killing reactor thread/)
+
+        forwarder.start
+
+        reactor_thread = forwarder.instance_variable_get(:@reactor_thread)
+        expect(forwarder.state).to eq(:stopped)
+        expect(reactor_thread).not_to be_alive
+      end
+    end
+
+    # Two forwarders entering the reactor-startup section concurrently must not
+    # both spawn EventMachine.run threads. Even though the first is mid-startup,
+    # EventMachine.reactor_running? is still false until its thread runs — so a
+    # check on reactor_running? alone would let a second forwarder also claim
+    # ownership. Guard on reactor_owner.nil? to make ownership atomic.
+    context 'when another forwarder is mid-startup' do
+      let(:forwarder2) do
+        described_class.new(
+          kube_client: kube_client,
+          namespace: namespace,
+          vmi_name: vmi_name,
+          target_port: target_port,
+          local_port: local_port + 1,
+          logger: logger,
+          on_error: on_error,
+        )
+      end
+
+      let(:helper_threads) { [] }
+
+      after do
+        # Make sure background helpers from each example are joined before the
+        # next one runs — they mutate shared class state (@reactor_running,
+        # reactor_owner) and would cause flakes if they leaked across examples.
+        helper_threads.each(&:join)
+        forwarder2.stop if forwarder2.state != :stopped
+      end
+
+      it 'does not spawn a second EventMachine.run thread or overwrite reactor_owner' do
+        # Simulate forwarder1's reactor still mid-startup: owner is set but
+        # reactor_running? has not flipped to true yet.
+        described_class.reactor_owner = forwarder
+        @reactor_running = false
+
+        # Flip the reactor "ready" shortly after forwarder2 starts so its
+        # bounded wait completes.
+        helper_threads << Thread.new do
+          sleep 0.05
+          @reactor_running = true
+        end
+
+        forwarder2.start
+
+        expect(EventMachine).not_to have_received(:run)
+        expect(described_class.reactor_owner).to eq(forwarder)
+        expect(forwarder2.state).to eq(:running)
+      end
+
+      it 'fails fast if the in-progress owner clears itself before the reactor comes up' do
+        described_class.reactor_owner = forwarder
+        @reactor_running = false
+
+        helper_threads << Thread.new do
+          sleep 0.05
+          described_class.reactor_owner = nil
+        end
+
+        captured = nil
+        forwarder2.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder2.start
+
+        expect(forwarder2.state).to eq(:stopped)
+        expect(captured.message).to include('reactor owner cleared before reactor became ready')
+      end
+
+      it 'fails fast with a deadline error if the in-progress reactor never becomes ready' do
+        stub_const("#{described_class}::REACTOR_STARTUP_TIMEOUT", 0.1)
+        described_class.reactor_owner = forwarder
+        @reactor_running = false
+
+        captured = nil
+        forwarder2.instance_variable_set(:@on_error, ->(e) { captured = e })
+
+        forwarder2.start
+
+        expect(forwarder2.state).to eq(:stopped)
+        expect(captured).to be_a(RuntimeError)
+        expect(captured.message).to match(/reactor did not become ready within/)
+      end
+    end
   end
 
   describe '#stop' do
